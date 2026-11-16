@@ -1,0 +1,61 @@
+[package]
+name = "toonlight"
+version = "0.15.0"
+edition = "2021"
+license = "MIT"
+description = "Free, open-source 2D frame-by-frame animation software"
+repository = "https://github.com/Cyril-vtn/toonlight"
+homepage = "https://github.com/Cyril-vtn/toonlight"
+readme = "README.md"
+keywords = ["animation", "2d", "drawing", "frame-by-frame", "egui"]
+categories = ["multimedia::images", "graphics"]
+rust-version = "1.85"
+build = "build.rs"
+
+[dependencies]
+eframe = { version = "=0.31.1", default-features = false, features = ["default_fonts", "glow", "accesskit"] }
+winit = "0.30"
+image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff", "tga", "bmp"] }
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sys-locale = "0.3"
+ab_glyph = "0.2"
+arboard = "3"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+rodio = { version = "=0.20.1", default-features = false, features = ["wav", "symphonia-mp3"] }
+
+[target.'cfg(windows)'.build-dependencies]
+winresource = "0.1"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = true
+
+[profile.dev]
+opt-level = 2
+
+[profile.dev.package."*"]
+opt-level = 2
+
+# Installers and app bundles, made by `cargo packager --release` (see docs/RELEASING.md).
+[package.metadata.packager]
+product-name = "Toonlight"
+identifier = "io.github.cyril-vtn.toonlight"
+publisher = "Toonlight contributors"
+category = "GraphicsAndDesign"
+copyright = "Copyright (c) 2026 Toonlight contributors"
+description = "Free, open-source 2D frame-by-frame animation software"
+license-file = "LICENSE"
+icons = ["assets/icon-32.png", "assets/icon-128.png", "assets/icon-256.png", "assets/icon-512.png"]
+before-packaging-command = "cargo build --release"
+out-dir = "dist"
+binaries = [{ path = "toonlight", main = true }]
+file-associations = [{ extensions = ["toonlight"], name = "Toonlight project", description = "Toonlight animation project", role = "editor" }]
+
+[package.metadata.packager.macos]
+minimum-system-version = "11.0"
+
+[package.metadata.packager.nsis]
+installer-icon = "assets/icon.ico"

@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest something Toonlight should do
+labels: [enhancement]
+body:
+  - type: textarea
+    id: need
+    attributes:
+      label: What would you like to do?
+      description: Describe the problem or the workflow first, then the feature you imagine.
+    validations:
+      required: true
+  - type: textarea
+    id: how
+    attributes:
+      label: How could it work?
+  - type: checkboxes
+    id: roadmap
+    attributes:
+      label: Roadmap
+      options:
+        - label: I checked docs/ROADMAP.md and the open issues.

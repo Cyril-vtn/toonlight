@@ -1,0 +1,13 @@
+# Build output
+/target
+/dist
+
+# Local test files and screenshots
+/shots
+*.atanim
+.DS_Store
+
+# Private research notes, kept on the maintainer's computer only
+/MECHANICS.md
+/mechanics.json
+/docs/FEATURE_GAP.md
