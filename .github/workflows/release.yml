@@ -53,7 +53,7 @@ jobs:
         run: cargo test --release
       - name: Build the installers
         run: cargo packager --release --formats ${{ matrix.formats }}
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: toonlight-${{ runner.os }}
           path: |
