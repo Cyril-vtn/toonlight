@@ -49,6 +49,7 @@ impl Selection {
         self.bounds.is_empty()
     }
 
+    #[cfg(test)]
     pub fn contains(&self, x: usize, y: usize) -> bool {
         x < self.w && y < self.h && self.mask[y * self.w + x] != 0
     }

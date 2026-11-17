@@ -1121,10 +1121,8 @@ impl AnimApp {
                     }
                 });
                 ui.separator();
-                let n = self.doc.layers[l].fx.len();
                 let mut action: Option<(usize, i32)> = None;
-                for i in 0..n {
-                    let e = &mut self.doc.layers[l].fx[i];
+                for (i, e) in self.doc.layers[l].fx.iter_mut().enumerate() {
                     egui::CollapsingHeader::new(format!("{}. {}", i + 1, e.effect.label()))
                         .id_salt(("fx-e", l, i))
                         .default_open(true)
@@ -1191,10 +1189,8 @@ impl AnimApp {
                     }
                 });
             });
-        if apply {
-            if !self.doc.apply_fx_stack(l) {
-                self.status = tr("Aucun effet actif à appliquer, ou le calque est verrouillé.").into();
-            }
+        if apply && !self.doc.apply_fx_stack(l) {
+            self.status = tr("Aucun effet actif à appliquer, ou le calque est verrouillé.").into();
         }
         if self.doc.layers.get(l).map(|x| &x.fx) != Some(&before) {
             self.doc.dirty = true;
@@ -2468,10 +2464,8 @@ impl AnimApp {
             .changed();
         ui.label(tr("Opacité par image :"));
         let n = lt.prev_count.max(lt.next_count).max(1);
-        for k in 0..n {
-            changed |= ui
-                .add(egui::Slider::new(&mut lt.ranges[k], 0.0..=100.0).text(format!("±{}", k + 1)))
-                .changed();
+        for (k, r) in lt.ranges.iter_mut().take(n).enumerate() {
+            changed |= ui.add(egui::Slider::new(r, 0.0..=100.0).text(format!("±{}", k + 1))).changed();
         }
         if changed {
             self.needs_full = true;
@@ -2651,8 +2645,8 @@ impl AnimApp {
     fn panel_groups(&mut self, ui: &mut egui::Ui) {
         use crate::doc::{GROUPS, GROUP_NAMES};
         ui.menu_button("☰", |ui| {
-            for g in 0..GROUPS.len() {
-                ui.checkbox(&mut self.group_listed[g], format!("{g}: {}", tr(GROUP_NAMES[g])));
+            for (g, on) in self.group_listed.iter_mut().enumerate() {
+                ui.checkbox(on, format!("{g}: {}", tr(GROUP_NAMES[g])));
             }
             ui.separator();
             if ui.button(tr("Tout afficher")).clicked() {

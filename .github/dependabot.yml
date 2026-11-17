@@ -1,4 +1,4 @@
-# Weekly pull requests that update dependencies and the actions used by the workflows.
+# Pull requests that keep dependencies and workflow actions up to date.
 version: 2
 updates:
   - package-ecosystem: cargo
@@ -6,7 +6,24 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # small, compatible updates together in one pull request
+      patches:
+        update-types: [patch]
+    ignore:
+      # The interface toolkit and the audio library change their API in each 0.x release:
+      # moving to a new one is a porting task, done by hand (see docs/ROADMAP.md).
+      # Security fixes still arrive through Dependabot security updates.
+      - dependency-name: eframe
+        update-types: [version-update:semver-minor, version-update:semver-major]
+      - dependency-name: egui
+        update-types: [version-update:semver-minor, version-update:semver-major]
+      - dependency-name: rodio
+        update-types: [version-update:semver-minor, version-update:semver-major]
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
+    groups:
+      actions:
+        patterns: ["*"]

@@ -246,6 +246,6 @@ mod tests {
             rotation: 0.0,
         });
         let out = c.shoot(0, &canvas, w, h, [255, 255, 255]);
-        assert!(out[(0 * 4 + 0) * 4] < 128, "zoomed: corners are now black");
+        assert!(out[0] < 128, "zoomed: corners are now black");
     }
 }

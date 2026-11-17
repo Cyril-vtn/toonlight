@@ -6,6 +6,10 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- CI: clippy now passes with no warnings on Rust 1.100 and is blocking (`-D warnings`); workflow
+  actions updated (checkout v7, upload-artifact v7, download-artifact v8, action-gh-release v3);
+  rfd updated to 0.18. Dependabot groups action and patch updates and leaves eframe / egui /
+  rodio minor versions to be ported by hand.
 - **New name: Toonlight** (was AnimCraft). Projects are now `.toonlight` files; `.animcraft` and
   `.atanim` files still open, and the old settings folder is moved to the new name.
 - Faster playback: frames are composed on every core and layer effects are prepared ahead.

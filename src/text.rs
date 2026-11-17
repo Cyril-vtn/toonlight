@@ -203,6 +203,7 @@ fn sample(mask: &[f32], w: usize, h: usize, x: f32, y: f32) -> f32 {
 }
 
 /// Write the text with its top-left corner at (x, y) into `px` (w×h RGBA). Returns the changed area.
+#[allow(clippy::too_many_arguments)]
 pub fn stamp(px: &mut [u8], w: usize, h: usize, x: f32, y: f32, color: [u8; 3], s: &TextSettings, font: &FontVec) -> Rect {
     let (mask, mw, mh) = layout_mask(font, s);
     // room around the letters for the border and the glow

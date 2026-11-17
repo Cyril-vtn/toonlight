@@ -237,11 +237,6 @@ impl Action {
             Tool(t) => crate::i18n::trf("Outil : {}", &[&t.label()]),
         }
     }
-
-    /// Actions that last while the key is held.
-    pub fn held(self) -> bool {
-        matches!(self, Action::FlipPrev | Action::FlipNext)
-    }
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -274,13 +269,13 @@ impl Binding {
     pub fn modifiers(&self) -> Modifiers {
         let mut m = Modifiers::NONE;
         if self.command {
-            m = m | Modifiers::COMMAND;
+            m |= Modifiers::COMMAND;
         }
         if self.shift {
-            m = m | Modifiers::SHIFT;
+            m |= Modifiers::SHIFT;
         }
         if self.alt {
-            m = m | Modifiers::ALT;
+            m |= Modifiers::ALT;
         }
         m
     }

@@ -54,8 +54,7 @@ pub fn export(doc: &Doc, frame: usize, path: &Path) -> Result<(), String> {
         y: 0,
         w,
         h,
-        rgba: std::iter::repeat([doc.paper[0], doc.paper[1], doc.paper[2], 255])
-            .take(w * h)
+        rgba: std::iter::repeat_n([doc.paper[0], doc.paper[1], doc.paper[2], 255], w * h)
             .flatten()
             .collect(),
         opacity: 255,
@@ -233,7 +232,7 @@ fn unpack(src: &[u8], out_len: usize) -> Vec<u8> {
         } else if n != -128 {
             let k = (1 - n as i32) as usize;
             if i < src.len() {
-                out.extend(std::iter::repeat(src[i]).take(k));
+                out.extend(std::iter::repeat_n(src[i], k));
             }
             i += 1;
         }

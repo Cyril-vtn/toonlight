@@ -202,10 +202,7 @@ impl Server {
         let method = msg.get("method").and_then(Value::as_str).unwrap_or("");
         let id = msg.get("id").cloned();
         // notifications (no id) get no answer
-        let id = match id {
-            Some(id) => id,
-            None => return None,
-        };
+        let id = id?;
         let params = msg.get("params").cloned().unwrap_or(json!({}));
         match method {
             "initialize" => {

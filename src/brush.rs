@@ -97,6 +97,7 @@ pub const ALL_SOURCES: [ConSource; 5] = [
 ];
 
 impl ConSource {
+    #[allow(dead_code)] // the number other programs use for it, kept for file exchange
     pub fn id(self) -> u32 {
         match self {
             ConSource::Off => 0,
@@ -200,6 +201,7 @@ pub const ALL_DRAW_MODES: [DrawMode; 17] = [
 
 impl DrawMode {
     /// The reference's number for this mode.
+    #[allow(dead_code)] // the number other programs use for it, kept for file exchange
     pub fn id(self) -> u32 {
         match self {
             DrawMode::Color => 0,
@@ -574,6 +576,7 @@ impl Stroke {
     }
 
     /// Like `to`, with the pen pressure (0..=1) at this point; pressure is interpolated between points.
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_p(&mut self, x: f32, y: f32, pressure: f32, px: &mut [u8]) -> Rect {
         let step = self.step;
         let mut changed = Rect::empty();
@@ -810,6 +813,7 @@ pub fn shape_points(tool: Tool, a: (f32, f32), b: (f32, f32)) -> Vec<Vec<(f32, f
 }
 
 /// Flood fill from (x, y) on `px`, matching colours within `tolerance` (0..=100).
+#[allow(clippy::too_many_arguments)]
 pub fn flood_fill(px: &mut [u8], w: usize, h: usize, x: usize, y: usize, color: [u8; 3], tolerance: f32, opacity: f32) -> Rect {
     if x >= w || y >= h {
         return Rect::empty();

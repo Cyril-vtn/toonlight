@@ -152,6 +152,7 @@ fn write_doc(doc: &Doc, f: &mut impl Write) -> Result<(), String> {
 }
 
 /// Open a project's first clip.
+#[cfg(test)]
 pub fn open(path: &Path) -> Result<Doc, String> {
     Ok(open_project(path)?.remove(0).doc)
 }
@@ -660,6 +661,64 @@ pub fn export_video(doc: &Doc, path: &Path, ffmpeg: &Path) -> Result<(), String>
     }
 }
 
+/// One shot of a storyboard page: name, notes, length in frames, frame rate, its first picture.
+pub struct BoardShot {
+    pub name: String,
+    pub notes: String,
+    pub frames: usize,
+    pub fps: f32,
+    pub picture: (Vec<u8>, usize, usize),
+}
+
+fn html_escape(t: &str) -> String {
+    t.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\n', "<br>")
+}
+
+/// Write a storyboard page: `index.html` and one picture per shot in `dir`. Opens in any browser
+/// and prints to PDF from there.
+pub fn export_storyboard_html(title: &str, shots: &[BoardShot], dir: &Path) -> Result<std::path::PathBuf, String> {
+    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    let total: usize = shots.iter().map(|s| s.frames).sum();
+    let fps = shots.first().map(|s| s.fps).unwrap_or(24.0).max(1.0);
+    let mut cards = String::new();
+    for (i, s) in shots.iter().enumerate() {
+        let (px, w, h) = &s.picture;
+        let img = image::RgbaImage::from_raw(*w as u32, *h as u32, px.clone()).ok_or("bad picture")?;
+        let k = (640.0 / (*w).max(*h) as f32).min(1.0);
+        let (tw, th) = (((*w as f32 * k) as u32).max(1), ((*h as f32 * k) as u32).max(1));
+        let small = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle);
+        let file = format!("shot-{:03}.png", i + 1);
+        small.save(dir.join(&file)).map_err(|e| e.to_string())?;
+        cards.push_str(&format!(
+            "<figure class=\"card\"><img src=\"{file}\" alt=\"\"><figcaption><b>{} · {}</b><span>{} · {:.1} s</span><p>{}</p></figcaption></figure>\n",
+            i + 1,
+            html_escape(&s.name),
+            crate::i18n::trf("{} images", &[&s.frames]),
+            s.frames as f32 / s.fps.max(1.0),
+            html_escape(&s.notes)
+        ));
+    }
+    let html = format!(
+        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{t}</title><style>\n\
+         body{{font-family:system-ui,sans-serif;margin:24px;color:#222}}h1{{margin:0 0 4px}}.sub{{color:#666;margin:0 0 20px}}\n\
+         .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}}\n\
+         .card{{margin:0;border:1px solid #ddd;border-radius:8px;overflow:hidden;break-inside:avoid}}\n\
+         .card img{{width:100%;display:block;background:#fff}}figcaption{{padding:8px 10px}}\n\
+         figcaption span{{float:right;color:#777;font-size:.9em}}figcaption p{{margin:6px 0 0;font-size:.92em;white-space:normal}}\n\
+         @media print{{body{{margin:8mm}}}}</style></head><body>\n<h1>{t}</h1><p class=\"sub\">{sub}</p>\n<div class=\"grid\">\n{cards}</div></body></html>\n",
+        t = html_escape(title),
+        sub = crate::i18n::trf("{} plans · {} images · {} s", &[&shots.len(), &total, &format!("{:.1}", total as f32 / fps)]),
+        cards = cards
+    );
+    let index = dir.join("index.html");
+    std::fs::write(&index, html).map_err(|e| e.to_string())?;
+    Ok(index)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -739,62 +798,4 @@ mod tests {
         assert_eq!(dab_spacing(Tool::Airbrush, 150.0), 18.0);
         assert!((dab_strength(30.0) - 0.09).abs() < 1e-6);
     }
-}
-
-/// One shot of a storyboard page: name, notes, length in frames, frame rate, its first picture.
-pub struct BoardShot {
-    pub name: String,
-    pub notes: String,
-    pub frames: usize,
-    pub fps: f32,
-    pub picture: (Vec<u8>, usize, usize),
-}
-
-fn html_escape(t: &str) -> String {
-    t.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
-        .replace('\n', "<br>")
-}
-
-/// Write a storyboard page: `index.html` and one picture per shot in `dir`. Opens in any browser
-/// and prints to PDF from there.
-pub fn export_storyboard_html(title: &str, shots: &[BoardShot], dir: &Path) -> Result<std::path::PathBuf, String> {
-    std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let total: usize = shots.iter().map(|s| s.frames).sum();
-    let fps = shots.first().map(|s| s.fps).unwrap_or(24.0).max(1.0);
-    let mut cards = String::new();
-    for (i, s) in shots.iter().enumerate() {
-        let (px, w, h) = &s.picture;
-        let img = image::RgbaImage::from_raw(*w as u32, *h as u32, px.clone()).ok_or("bad picture")?;
-        let k = (640.0 / (*w).max(*h) as f32).min(1.0);
-        let (tw, th) = (((*w as f32 * k) as u32).max(1), ((*h as f32 * k) as u32).max(1));
-        let small = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle);
-        let file = format!("shot-{:03}.png", i + 1);
-        small.save(dir.join(&file)).map_err(|e| e.to_string())?;
-        cards.push_str(&format!(
-            "<figure class=\"card\"><img src=\"{file}\" alt=\"\"><figcaption><b>{} · {}</b><span>{} · {:.1} s</span><p>{}</p></figcaption></figure>\n",
-            i + 1,
-            html_escape(&s.name),
-            crate::i18n::trf("{} images", &[&s.frames]),
-            s.frames as f32 / s.fps.max(1.0),
-            html_escape(&s.notes)
-        ));
-    }
-    let html = format!(
-        "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{t}</title><style>\n\
-         body{{font-family:system-ui,sans-serif;margin:24px;color:#222}}h1{{margin:0 0 4px}}.sub{{color:#666;margin:0 0 20px}}\n\
-         .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}}\n\
-         .card{{margin:0;border:1px solid #ddd;border-radius:8px;overflow:hidden;break-inside:avoid}}\n\
-         .card img{{width:100%;display:block;background:#fff}}figcaption{{padding:8px 10px}}\n\
-         figcaption span{{float:right;color:#777;font-size:.9em}}figcaption p{{margin:6px 0 0;font-size:.92em;white-space:normal}}\n\
-         @media print{{body{{margin:8mm}}}}</style></head><body>\n<h1>{t}</h1><p class=\"sub\">{sub}</p>\n<div class=\"grid\">\n{cards}</div></body></html>\n",
-        t = html_escape(title),
-        sub = crate::i18n::trf("{} plans · {} images · {} s", &[&shots.len(), &total, &format!("{:.1}", total as f32 / fps)]),
-        cards = cards
-    );
-    let index = dir.join("index.html");
-    std::fs::write(&index, html).map_err(|e| e.to_string())?;
-    Ok(index)
 }

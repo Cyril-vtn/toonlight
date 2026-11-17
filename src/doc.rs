@@ -107,6 +107,7 @@ fn default_post() -> Behavior {
 pub const ALL_BEHAVIORS: [Behavior; 4] = [Behavior::None, Behavior::Repeat, Behavior::PingPong, Behavior::Hold];
 
 impl Behavior {
+    #[allow(dead_code)] // the number other programs use for it, kept for file exchange
     pub fn id(self) -> u32 {
         match self {
             Behavior::None => 0,
@@ -349,11 +350,6 @@ enum Undo {
     },
 }
 
-/// Memory the undo history may use, like the reference's `[Undo] MaxSize` setting
-/// (default 268 435 456 bytes = 256 MB).
-/// The oldest steps are dropped when the history grows past it; the last step is always kept.
-pub const UNDO_MAX_BYTES: usize = 268_435_456;
-
 impl Undo {
     /// Bytes this step keeps.
     fn bytes(&self) -> usize {
@@ -545,10 +541,7 @@ impl Doc {
                 return false;
             }
             let numbers = self.drawing_numbers(li);
-            match numbers.iter().find(|(_, k)| **k == n) {
-                Some((id, _)) => Some(*id),
-                None => None,
-            }
+            numbers.iter().find(|(_, k)| **k == n).map(|(id, _)| *id)
         };
         self.push_structure_undo();
         let cel = match (cel, t.parse::<usize>()) {
@@ -648,11 +641,6 @@ impl Doc {
             }
         }
         mask
-    }
-
-    /// Memory used by the undo history (bytes).
-    pub fn undo_bytes(&self) -> usize {
-        self.undo.iter().map(Undo::bytes).sum::<usize>() + self.redo.iter().map(Undo::bytes).sum::<usize>()
     }
 
     pub fn push_pixel_undo(&mut self, id: usize, rect: Rect, before: &[u8]) {
@@ -840,14 +828,14 @@ impl Doc {
         let mut seq = vec![];
         for id in ids {
             seq.push(Some(id));
-            seq.extend(std::iter::repeat(None).take(n - 1));
+            seq.extend(std::iter::repeat_n(None, n - 1));
         }
         let old = end - first + 1;
         let new_len = seq.len();
         let cels = &mut self.layers[li].cels;
         cels.splice(first..=end, seq);
         if new_len < old {
-            cels.extend(std::iter::repeat(None).take(old - new_len));
+            cels.extend(std::iter::repeat_n(None, old - new_len));
         }
         self.pad_all();
         Some(first + new_len - 1)
@@ -883,7 +871,7 @@ impl Doc {
         let cels = &mut self.layers[li].cels;
         let b = b.min(cels.len() - 1);
         cels.drain(a..=b);
-        cels.extend(std::iter::repeat(None).take(b - a + 1));
+        cels.extend(std::iter::repeat_n(None, b - a + 1));
         self.trim();
     }
 
@@ -1203,7 +1191,7 @@ impl Doc {
             return None;
         }
         let mut out: Vec<Option<usize>> = vec![];
-        let mut seed = (a as u64 + 1) * 0x9E37_79B9_7F4A_7C15 ^ (b as u64 + times as u64);
+        let mut seed = ((a as u64 + 1) * 0x9E37_79B9_7F4A_7C15) ^ (b as u64 + times as u64);
         for k in 1..=times {
             let mut part: Vec<Option<usize>> = match mode {
                 RepeatMode::Loop => seq.clone(),
@@ -1652,6 +1640,7 @@ pub enum RepeatMode {
 impl RepeatMode {
     /// The reference's instance-mode number (actions InstanceModeRepeat → 1,
     /// ping-pong → 4, random → 5).
+    #[allow(dead_code)] // the number other programs use for it, kept for file exchange
     pub fn id(self) -> u32 {
         match self {
             RepeatMode::Loop => 1,

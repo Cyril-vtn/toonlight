@@ -44,6 +44,7 @@ impl SoundTrack {
 
 /// A decoded sound: interleaved f32 samples.
 pub struct Clip {
+    #[allow(dead_code)] // where it was loaded from, for messages
     pub path: PathBuf,
     pub channels: u16,
     pub rate: u32,
@@ -114,6 +115,7 @@ impl Clip {
     }
 
     /// Samples to play when the animation starts at `start` seconds.
+    #[allow(clippy::wrong_self_convention)]
     fn from_time(&self, track: &SoundTrack, start: f32) -> Vec<f32> {
         let ch = self.channels as usize;
         let rel = start - track.offset;

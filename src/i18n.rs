@@ -68,11 +68,6 @@ impl Lang {
             .or_else(|| ALL_LANGS.iter().copied().find(|l| c.starts_with(l.code())))
     }
 
-    /// Needs a font with Chinese / Japanese characters.
-    pub fn needs_cjk(self) -> bool {
-        matches!(self, Lang::Zh | Lang::Ja)
-    }
-
     fn column(self) -> Option<usize> {
         match self {
             Lang::Fr => None,
