@@ -138,61 +138,48 @@ impl Clip {
     }
 }
 
-/// Plays a clip; the audio device is opened the first time it's needed.
+/// Plays the sound tracks together; the audio device is opened the first time it's needed.
 #[derive(Default)]
 pub struct Player {
     out: Option<(rodio::OutputStream, rodio::OutputStreamHandle)>,
-    sink: Option<rodio::Sink>,
+    sinks: Vec<rodio::Sink>,
 }
 
 impl Player {
-    pub fn play(&mut self, clip: &Clip, track: &SoundTrack, start: f32) -> Result<(), String> {
+    /// Play every track that isn't muted from `start` seconds into the animation; with `secs`,
+    /// only that long (audio scrubbing).
+    pub fn play(&mut self, tracks: &[(&Clip, &SoundTrack)], start: f32, secs: Option<f32>) -> Result<(), String> {
         self.stop();
-        if track.mute {
+        if tracks.iter().all(|(_, t)| t.mute) {
             return Ok(());
         }
         if self.out.is_none() {
             self.out = Some(rodio::OutputStream::try_default().map_err(|e| e.to_string())?);
         }
         let handle = &self.out.as_ref().unwrap().1;
-        let sink = rodio::Sink::try_new(handle).map_err(|e| e.to_string())?;
-        let data = clip.from_time(track, start);
-        if data.is_empty() {
-            return Ok(());
+        for (clip, track) in tracks.iter().filter(|(_, t)| !t.mute) {
+            let mut data = clip.from_time(track, start);
+            if let Some(secs) = secs {
+                data.truncate((secs.max(0.0) * clip.rate as f32) as usize * clip.channels as usize);
+            }
+            if data.is_empty() {
+                continue;
+            }
+            let sink = rodio::Sink::try_new(handle).map_err(|e| e.to_string())?;
+            // every track is made ready first, then they all start together
+            sink.pause();
+            sink.set_volume(track.volume.clamp(0.0, 2.0));
+            sink.append(rodio::buffer::SamplesBuffer::new(clip.channels, clip.rate, data));
+            self.sinks.push(sink);
         }
-        sink.set_volume(track.volume.clamp(0.0, 2.0));
-        sink.append(rodio::buffer::SamplesBuffer::new(clip.channels, clip.rate, data));
-        sink.play();
-        self.sink = Some(sink);
-        Ok(())
-    }
-
-    /// Play only `secs` seconds from `start` (audio scrubbing).
-    pub fn play_for(&mut self, clip: &Clip, track: &SoundTrack, start: f32, secs: f32) -> Result<(), String> {
-        self.stop();
-        if track.mute {
-            return Ok(());
+        for s in &self.sinks {
+            s.play();
         }
-        if self.out.is_none() {
-            self.out = Some(rodio::OutputStream::try_default().map_err(|e| e.to_string())?);
-        }
-        let handle = &self.out.as_ref().unwrap().1;
-        let sink = rodio::Sink::try_new(handle).map_err(|e| e.to_string())?;
-        let mut data = clip.from_time(track, start);
-        let n = (secs.max(0.0) * clip.rate as f32) as usize * clip.channels as usize;
-        data.truncate(n);
-        if data.is_empty() {
-            return Ok(());
-        }
-        sink.set_volume(track.volume.clamp(0.0, 2.0));
-        sink.append(rodio::buffer::SamplesBuffer::new(clip.channels, clip.rate, data));
-        sink.play();
-        self.sink = Some(sink);
         Ok(())
     }
 
     pub fn stop(&mut self) {
-        if let Some(s) = self.sink.take() {
+        for s in self.sinks.drain(..) {
             s.stop();
         }
     }

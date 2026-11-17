@@ -6,6 +6,15 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Several sound tracks per shot**: the Sound panel lists every track (mute, volume, offset,
+  fades, replace, remove) and adds more; each has its row and waveform in the timeline; they play
+  together. Older versions open such a project with its first track.
+- **Sound in the film export**: "Whole film as MP4" now includes every shot's sound tracks, each
+  placed where its shot starts and cut where the shot ends.
+- Fix: the MP4 export now applies a sound's fade out, and fades follow the sound's own time when
+  its start is cut. Sounds are mixed as they are (needs FFmpeg 4.4 or later).
+- Fix: a sound set by the AI through the live bridge now plays in the window at once.
+- AI (MCP): `sound_set` takes `track` and `add`; `project_info` lists `sounds`.
 - **Shift, slide and split layers** (Layer menu): shift moves a layer's whole animation in time
   (never past the first frame, so no drawing is lost); slide moves the drawings inside the layer,
   which keeps its start and end; split cuts the layer in two at the current frame (also in the

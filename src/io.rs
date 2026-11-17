@@ -36,8 +36,12 @@ struct Header {
     paper: [u8; 3],
     #[serde(default)]
     paper_texture: Paper,
+    /// The first sound track: the only one in files written before several tracks existed, and
+    /// still written so that those versions open the project with its first sound.
     #[serde(default)]
     sound: Option<crate::sound::SoundTrack>,
+    #[serde(default)]
+    sounds: Vec<crate::sound::SoundTrack>,
     #[serde(default = "crate::doc::default_palette")]
     palette: Vec<[u8; 3]>,
     #[serde(default)]
@@ -135,7 +139,8 @@ fn write_doc(doc: &Doc, f: &mut impl Write) -> Result<(), String> {
         frames: doc.frames,
         paper: doc.paper,
         paper_texture: doc.paper_texture,
-        sound: doc.sound.clone(),
+        sound: doc.sounds.first().cloned(),
+        sounds: doc.sounds.clone(),
         palette: doc.palette.clone(),
         camera: Some(doc.camera.clone()),
         light: doc.light.clone(),
@@ -267,7 +272,11 @@ fn read_doc(f: &mut impl Read) -> Result<Doc, String> {
     doc.frames = h.frames.max(1);
     doc.paper = h.paper;
     doc.paper_texture = h.paper_texture;
-    doc.sound = h.sound;
+    doc.sounds = if h.sounds.is_empty() {
+        h.sound.into_iter().collect()
+    } else {
+        h.sounds
+    };
     doc.palette = h.palette;
     if let Some(c) = h.camera {
         doc.camera = c;
@@ -334,15 +343,24 @@ pub fn export_film_frames(clips: &[&Doc], dir: &Path) -> Result<usize, String> {
     Ok(n)
 }
 
-/// Export every clip one after the other as one MP4 (at the first clip's frame rate, no sound).
+/// Export every clip one after the other as one MP4, at the first clip's frame rate, with each
+/// clip's sound tracks placed where the clip starts and cut where it ends.
 pub fn export_film_video(clips: &[&Doc], path: &Path, ffmpeg: &Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let (fw, fh) = clips[0].output_size();
+    let fps = clips[0].fps.max(1.0);
+    let mut placed = vec![];
+    let mut start = 0.0;
+    for d in clips {
+        let length = d.frames as f32 / fps;
+        placed.extend(d.sounds.iter().map(|t| PlacedSound { track: t, start, length }));
+        start += length;
+    }
     let mut child = Command::new(ffmpeg)
         .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s"])
         .arg(format!("{fw}x{fh}"))
         .args(["-r", &format!("{}", clips[0].fps), "-i", "-"])
-        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"])
+        .args(av_args(&placed, start))
         .arg(path)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
@@ -602,42 +620,84 @@ pub fn find_ffmpeg() -> Option<std::path::PathBuf> {
     None
 }
 
-/// FFmpeg arguments that add the project's sound track (offset, volume, fades), if it has one.
-fn audio_args(doc: &Doc) -> Vec<String> {
-    let Some(t) = &doc.sound else { return vec![] };
-    if t.mute || !t.path.is_file() {
-        return vec![];
+/// A sound track placed in a video: the shot it belongs to starts at `start` seconds and lasts
+/// `length` seconds (the sound is not heard outside its shot).
+pub struct PlacedSound<'a> {
+    pub track: &'a crate::sound::SoundTrack,
+    pub start: f32,
+    pub length: f32,
+}
+
+/// The FFmpeg filter that places one sound (input number `input`) and names the result
+/// `[a<input>]`: fades in the sound's own time, the part before the shot's first frame cut off
+/// (negative offset), volume, the end cut at the shot's end, then silence up to its place.
+/// `duration` is the sound file's length when known (needed for the fade out).
+pub fn sound_filter(s: &PlacedSound, input: usize, duration: Option<f32>) -> String {
+    let t = s.track;
+    let mut f: Vec<String> = vec![];
+    if t.fade_in > 0.0 {
+        f.push(format!("afade=t=in:st=0:d={}", t.fade_in));
+    }
+    if let Some(d) = duration.filter(|_| t.fade_out > 0.0) {
+        f.push(format!("afade=t=out:st={}:d={}", (d - t.fade_out).max(0.0), t.fade_out));
+    }
+    if t.offset < 0.0 {
+        f.push(format!("atrim=start={}", -t.offset));
+        f.push("asetpts=PTS-STARTPTS".into());
+    }
+    f.push(format!("volume={}", t.volume));
+    let late = t.offset.max(0.0);
+    f.push(format!("atrim=end={}", (s.length - late).max(0.0)));
+    f.push("aformat=sample_rates=48000:channel_layouts=stereo".into());
+    let delay = ((s.start + late) * 1000.0).round() as u64;
+    if delay > 0 {
+        f.push(format!("adelay={delay}:all=1"));
+    }
+    format!("[{input}:a]{}[a{input}]", f.join(","))
+}
+
+/// FFmpeg arguments for the pictures (input 0) and the sounds: every sound that is not muted and
+/// whose file exists is placed, then they are mixed as they are (no automatic level change). The
+/// video lasts `total` seconds whatever the sounds' lengths.
+fn av_args(sounds: &[PlacedSound], total: f32) -> Vec<String> {
+    let pad = "pad=ceil(iw/2)*2:ceil(ih/2)*2";
+    let video = ["-c:v", "libx264", "-pix_fmt", "yuv420p"].map(String::from);
+    let heard: Vec<&PlacedSound> = sounds
+        .iter()
+        .filter(|s| !s.track.mute && s.track.path.is_file() && s.length > s.track.offset.max(0.0))
+        .collect();
+    if heard.is_empty() {
+        let mut a = video.to_vec();
+        a.extend(["-vf".into(), pad.into()]);
+        return a;
     }
     let mut a: Vec<String> = vec![];
-    if t.offset >= 0.0 {
-        a.extend(["-itsoffset".into(), format!("{}", t.offset)]);
+    let mut graph = vec![format!("[0:v]{pad}[v]")];
+    let mut mix = String::new();
+    for (k, s) in heard.iter().enumerate() {
+        a.extend(["-i".into(), s.track.path.display().to_string()]);
+        // the file's length is only needed to place a fade out
+        let duration = if s.track.fade_out > 0.0 {
+            crate::sound::Clip::load(&s.track.path).ok().map(|c| c.duration())
+        } else {
+            None
+        };
+        graph.push(sound_filter(s, k + 1, duration));
+        mix.push_str(&format!("[a{}]", k + 1));
+    }
+    graph.push(if heard.len() == 1 {
+        format!("{mix}anull[aout]")
     } else {
-        a.extend(["-ss".into(), format!("{}", -t.offset)]);
-    }
-    a.extend(["-i".into(), t.path.display().to_string()]);
-    let mut filters = vec![format!("volume={}", t.volume)];
-    if t.fade_in > 0.0 {
-        filters.push(format!("afade=t=in:st=0:d={}", t.fade_in));
-    }
-    a.extend([
-        "-map".into(),
-        "0:v".into(),
-        "-map".into(),
-        "1:a".into(),
-        "-af".into(),
-        filters.join(","),
-    ]);
-    // keep the video's length whatever the sound's length
-    a.extend([
-        "-c:a".into(),
-        "aac".into(),
-        "-t".into(),
-        format!("{}", doc.frames as f32 / doc.fps.max(1.0)),
-    ]);
+        format!("{mix}amix=inputs={}:normalize=0:duration=longest[aout]", heard.len())
+    });
+    a.extend(["-filter_complex".into(), graph.join(";")]);
+    a.extend(["-map", "[v]", "-map", "[aout]"].map(String::from));
+    a.extend(video);
+    a.extend(["-c:a".into(), "aac".into(), "-t".into(), format!("{total}")]);
     a
 }
 
-/// Export an MP4 (H.264) video through FFmpeg, feeding it raw frames (and the sound track).
+/// Export an MP4 (H.264) video through FFmpeg, feeding it raw frames (and the sound tracks).
 pub fn export_video(doc: &Doc, path: &Path, ffmpeg: &Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let mut child = Command::new(ffmpeg)
@@ -647,8 +707,19 @@ pub fn export_video(doc: &Doc, path: &Path, ffmpeg: &Path) -> Result<(), String>
             format!("{ow}x{oh}")
         })
         .args(["-r", &format!("{}", doc.fps), "-i", "-"])
-        .args(audio_args(doc))
-        .args(["-c:v", "libx264", "-pix_fmt", "yuv420p", "-vf", "pad=ceil(iw/2)*2:ceil(ih/2)*2"])
+        .args({
+            let length = doc.frames as f32 / doc.fps.max(1.0);
+            let placed: Vec<PlacedSound> = doc
+                .sounds
+                .iter()
+                .map(|t| PlacedSound {
+                    track: t,
+                    start: 0.0,
+                    length,
+                })
+                .collect();
+            av_args(&placed, length)
+        })
         .arg(path)
         .stdin(Stdio::piped())
         .stderr(Stdio::piped())
@@ -797,6 +868,54 @@ mod tests {
         let back = open(&dir.join("t.toonlight")).unwrap();
         assert_eq!(back.frames, 4);
         assert_eq!(back.keys(0).len(), 3);
+    }
+
+    #[test]
+    fn sounds_are_saved_and_placed_in_the_film() {
+        use crate::sound::SoundTrack;
+        let dir = std::env::temp_dir().join(format!("toonlight-sound-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut d = small_doc();
+        let mut a = SoundTrack::new("a.wav".into());
+        a.offset = 0.5;
+        a.volume = 0.8;
+        let mut b = SoundTrack::new("b.wav".into());
+        b.offset = -1.0;
+        b.fade_in = 0.25;
+        b.fade_out = 0.5;
+        d.sounds = vec![a.clone(), b.clone()];
+        save(&d, &dir.join("s.toonlight")).unwrap();
+        let back = open(&dir.join("s.toonlight")).unwrap();
+        assert_eq!(back.sounds, vec![a.clone(), b.clone()], "every track comes back");
+        // a file from before several tracks: only "sound"
+        let old: Header = serde_json::from_str(
+            r#"{"w":4,"h":4,"fps":12.0,"frames":1,"paper":[255,255,255],"light":{"active":true,"prev_count":2,"next_count":2,"prev_color":[0,192,0],"next_color":[255,128,0],"use_prev_color":true,"use_next_color":true,"front":false,"opacity":100.0,"ranges":[50.0,30.0,15.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0]},"layers":[],"drawings":0,"sound":{"path":"old.wav"}}"#,
+        )
+        .unwrap();
+        assert!(old.sounds.is_empty() && old.sound.unwrap().path.ends_with("old.wav"));
+        // the second shot starts 2 s into the film and lasts 3 s
+        let s = PlacedSound {
+            track: &a,
+            start: 2.0,
+            length: 3.0,
+        };
+        assert_eq!(
+            sound_filter(&s, 1, None),
+            "[1:a]volume=0.8,atrim=end=2.5,aformat=sample_rates=48000:channel_layouts=stereo,adelay=2500:all=1[a1]"
+        );
+        let s = PlacedSound {
+            track: &b,
+            start: 0.0,
+            length: 3.0,
+        };
+        assert_eq!(
+            sound_filter(&s, 2, Some(4.0)),
+            "[2:a]afade=t=in:st=0:d=0.25,afade=t=out:st=3.5:d=0.5,atrim=start=1,asetpts=PTS-STARTPTS,volume=1,atrim=end=3,aformat=sample_rates=48000:channel_layouts=stereo[a2]"
+        );
+        // sounds whose file is missing are left out: only the pictures are encoded
+        let args = av_args(&[s], 3.0);
+        assert!(args.contains(&"-vf".to_string()) && !args.contains(&"-filter_complex".to_string()));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

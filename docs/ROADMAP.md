@@ -7,12 +7,11 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **53** done, **21** partial, **76** missing.
+Today: **54** done, **22** partial, **74** missing.
 
 ## Next (P1)
 
 1. Drawing: tablet pressure on macOS, pen tilt.
-2. Sound: several sound tracks, sound across shots in the film export.
 
 ---
 
@@ -196,11 +195,11 @@ Each layer has an **effect stack** (several effects in a row, shown live, animat
 
 | Feature | Status | Priority |
 |---|---|---|
-| One sound per shot, waveform, volume, offset, fades, mute, export with MP4 | ✅ | — |
-| Several sound tracks per clip and per project, lock, colour | ❌ | P2 |
+| Sound per shot: waveform, volume, offset, fades, mute, export with MP4 | ✅ | — |
+| Several sound tracks per shot (done); tracks for the whole project, lock, colour | 🟡 | P2 |
 | Sound scrubbing (hear while moving the playhead) | ✅ | — |
 | Metronome, beeps | ❌ | P3 |
-| Sound across shots in the film export | ❌ | P2 |
+| Sound across shots in the film export | ✅ | — |
 | Audio sequence export | ❌ | P3 |
 
 ## 12. Import and export

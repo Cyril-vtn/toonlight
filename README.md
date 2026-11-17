@@ -42,11 +42,12 @@ Installers for every stable version are on the
   in-between drawings inserted between two drawings, notes, bookmarks, mark in / out, zoom,
   frame numbers or timecode, exposure sheet.
 - **Light table** (onion skin), **flipping**, **view rotation and mirror**.
-- **Animated camera**, **shots and storyboard**, **sound** with waveform and scrubbing.
+- **Animated camera**, **shots and storyboard**, **sound**: several tracks per shot with
+  waveforms, volume, offset, fades and scrubbing, mixed into the MP4 and film exports.
 - **Effects** with live preview: blur, mosaic, noise, wave, brightness / contrast,
   hue / saturation, invert, colour key, luma key.
-- **Export**: PNG sequence, animated GIF, MP4 (with [FFmpeg](https://ffmpeg.org) installed), layer
-  structure for After Effects.
+- **Export**: PNG sequence, animated GIF, MP4 with sound (with [FFmpeg](https://ffmpeg.org) 4.4 or
+  later installed), the whole film (every shot, with its sounds), layer structure for After Effects.
 - **Workspace**: panels you drag between columns or float, pinned or sliding columns, four rooms
   (workspaces) you can rename, export and import; keyboard shortcuts you can change, per room.
 - **Languages**: English, French, Spanish, German, Simplified Chinese, Japanese.

@@ -164,9 +164,12 @@ pub struct AnimApp {
     last_watch: Instant,
     show_ai: bool,
     show_xsheet: bool,
-    clip: Option<Clip>,
+    /// The shot's sound files, decoded (one per sound track, None when a file can't be read),
+    /// the paths they were read from, and each track's loudness per frame for the timeline.
+    audio: Vec<Option<Clip>>,
+    audio_paths: Vec<PathBuf>,
     player: Player,
-    peaks: Vec<f32>,
+    peaks: Vec<Vec<f32>>,
     peaks_key: String,
     text: TextSettings,
     font: Option<ab_glyph::FontVec>,
@@ -341,7 +344,8 @@ impl AnimApp {
             last_watch: Instant::now(),
             show_ai: false,
             show_xsheet: false,
-            clip: None,
+            audio: vec![],
+            audio_paths: vec![],
             player: Player::default(),
             peaks: vec![],
             peaks_key: String::new(),
@@ -499,32 +503,69 @@ impl AnimApp {
         self.load_clip();
     }
 
-    /// Decode the project's sound file (kept by path, like the original).
+    /// Decode the shot's sound files (the project keeps their paths, not the sounds).
     fn load_clip(&mut self) {
-        self.clip = None;
         self.peaks_key.clear();
-        if let Some(t) = &self.doc.sound {
+        self.audio_paths = self.doc.sounds.iter().map(|t| t.path.clone()).collect();
+        let mut audio = vec![];
+        for t in &self.doc.sounds {
             match Clip::load(&t.path) {
-                Ok(c) => self.clip = Some(c),
-                Err(e) => self.status = trf("Son introuvable ou illisible : {}", &[&e]),
+                Ok(c) => audio.push(Some(c)),
+                Err(e) => {
+                    self.status = trf("Son introuvable ou illisible : {}", &[&e]);
+                    audio.push(None);
+                }
             }
+        }
+        self.audio = audio;
+    }
+
+    /// Decode the sounds again when the shot's list of sound files changed (another shot, or an
+    /// AI command).
+    fn sync_audio(&mut self) {
+        if !self.doc.sounds.iter().map(|t| &t.path).eq(self.audio_paths.iter()) {
+            self.load_clip();
         }
     }
 
-    fn import_sound(&mut self) {
+    /// Pick a sound file: a new sound track, or the new file of track `replace`.
+    fn import_sound(&mut self, replace: Option<usize>) {
         if let Some(p) = rfd::FileDialog::new().add_filter(tr("Son"), &["wav", "mp3"]).pick_file() {
             match Clip::load(&p) {
                 Ok(c) => {
-                    self.doc.push_structure_undo();
+                    self.sync_audio();
                     let secs = c.duration();
-                    self.doc.sound = Some(SoundTrack::new(p.clone()));
-                    self.clip = Some(c);
+                    match replace.filter(|i| *i < self.doc.sounds.len()) {
+                        Some(i) => {
+                            self.doc.sounds[i].path = p.clone();
+                            self.audio[i] = Some(c);
+                            self.audio_paths[i] = p.clone();
+                        }
+                        None => {
+                            self.doc.sounds.push(SoundTrack::new(p.clone()));
+                            self.audio.push(Some(c));
+                            self.audio_paths.push(p.clone());
+                        }
+                    }
+                    self.doc.dirty = true;
                     self.peaks_key.clear();
                     self.status = trf("Son importé : {} ({} s)", &[&p.display(), &format!("{secs:.1}")]);
                 }
                 Err(e) => self.status = trf("Son introuvable ou illisible : {}", &[&e]),
             }
         }
+    }
+
+    /// Play the shot's sound tracks from the current frame; with `secs`, only that long.
+    fn play_sounds(&mut self, secs: Option<f32>) -> Result<(), String> {
+        let pairs: Vec<(&Clip, &SoundTrack)> = self
+            .audio
+            .iter()
+            .zip(&self.doc.sounds)
+            .filter_map(|(c, t)| c.as_ref().map(|c| (c, t)))
+            .collect();
+        let start = self.doc.frame as f32 / self.doc.fps.max(1.0);
+        self.player.play(&pairs, start, secs)
     }
 
     /// Audio scrubbing: a short piece of the sound when the frame changes by hand.
@@ -537,10 +578,7 @@ impl AnimApp {
         if !go {
             return;
         }
-        if let (Some(c), Some(t)) = (&self.clip, &self.doc.sound) {
-            let start = self.doc.frame as f32 / self.doc.fps.max(1.0);
-            let _ = self.player.play_for(c, t, start, self.scrub_secs);
-        }
+        let _ = self.play_sounds(Some(self.scrub_secs));
     }
 
     /// The cells the timing buttons act on: the selection, else the current cell.
@@ -889,22 +927,23 @@ impl AnimApp {
     }
 
     fn start_sound(&mut self) {
-        if let (Some(c), Some(t)) = (&self.clip, &self.doc.sound) {
-            let start = self.doc.frame as f32 / self.doc.fps.max(1.0);
-            if let Err(e) = self.player.play(c, t, start) {
-                self.status = trf("Lecture du son impossible : {}", &[&e]);
-            }
+        if let Err(e) = self.play_sounds(None) {
+            self.status = trf("Lecture du son impossible : {}", &[&e]);
         }
     }
 
-    /// Loudness of the sound at each frame, for the timeline.
+    /// Loudness of each sound track at each frame, for the timeline.
     fn update_peaks(&mut self) {
-        let key = format!("{:?}{}{}", self.doc.sound, self.doc.fps, self.doc.frames);
+        self.sync_audio();
+        let key = format!("{:?}{}{}", self.doc.sounds, self.doc.fps, self.doc.frames);
         if key != self.peaks_key {
-            self.peaks = match (&self.clip, &self.doc.sound) {
-                (Some(c), Some(t)) => c.peaks_per_frame(t, self.doc.fps.max(1.0), self.doc.frames),
-                _ => vec![],
-            };
+            let (fps, frames) = (self.doc.fps.max(1.0), self.doc.frames);
+            self.peaks = self
+                .audio
+                .iter()
+                .zip(&self.doc.sounds)
+                .map(|(c, t)| c.as_ref().map(|c| c.peaks_per_frame(t, fps, frames)).unwrap_or_default())
+                .collect();
             self.peaks_key = key;
         }
     }
@@ -926,7 +965,7 @@ impl AnimApp {
                     "Une ligne par image, une colonne par calque : le numéro du dessin quand il commence, un trait tant qu'il est tenu.",
                 ));
                 let nl = self.doc.layers.len();
-                let has_sound = !self.peaks.is_empty();
+                let has_sound = self.peaks.iter().any(|p| !p.is_empty());
                 egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                     egui::Grid::new("xsheet").striped(true).min_col_width(56.0).show(ui, |ui| {
                         ui.strong(tr("Image"));
@@ -948,7 +987,8 @@ impl AnimApp {
                                 lab
                             });
                             if has_sound {
-                                let v = self.peaks.get(f).copied().unwrap_or(0.0);
+                                // the loudest of the tracks at this frame
+                                let v = self.peaks.iter().filter_map(|p| p.get(f)).fold(0.0f32, |m, v| m.max(*v));
                                 let (r, _) = ui.allocate_exact_size(vec2(50.0, 14.0), Sense::hover());
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(r.min, vec2(50.0 * v, 14.0)),
@@ -1749,7 +1789,7 @@ impl AnimApp {
                         }
                         if ui.button(tr("Importer un son (WAV, MP3)…")).clicked() {
                             ui.close_menu();
-                            self.import_sound();
+                            self.import_sound(None);
                         }
                     });
                     ui.menu_button(tr("Exporter"), |ui| {
@@ -1920,7 +1960,7 @@ impl AnimApp {
                     ui.separator();
                     if ui.button(tr("Importer un son (WAV, MP3)…")).clicked() {
                         ui.close_menu();
-                        self.import_sound();
+                        self.import_sound(None);
                     }
                     if ui.checkbox(&mut self.cam_view, tr("Voir à travers la caméra")).changed() {
                         self.needs_full = true;
@@ -2372,21 +2412,22 @@ impl AnimApp {
     }
 
     fn sound_panel(&mut self, ui: &mut egui::Ui) {
-        let mut remove = false;
-        let mut replace = false;
+        self.sync_audio();
+        let mut remove = None;
+        let mut replace = None;
         let mut changed = false;
         let fps = self.doc.fps.max(1.0);
-        match &mut self.doc.sound {
-            None => {
-                if ui.button(tr("Importer un son (WAV, MP3)…")).clicked() {
-                    self.import_sound();
+        let many = self.doc.sounds.len() > 1;
+        for (k, t) in self.doc.sounds.iter_mut().enumerate() {
+            ui.push_id(("sound-track", k), |ui| {
+                if k > 0 {
+                    ui.separator();
                 }
-            }
-            Some(t) => {
                 let name = t.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                ui.label(egui::RichText::new(name).monospace())
+                let title = if many { format!("{} · {name}", k + 1) } else { name };
+                ui.label(egui::RichText::new(title).monospace())
                     .on_hover_text(t.path.display().to_string());
-                if self.clip.is_none() {
+                if self.audio.get(k).is_none_or(|c| c.is_none()) {
                     ui.colored_label(Color32::from_rgb(255, 190, 80), tr("Fichier introuvable"));
                 }
                 changed |= ui.checkbox(&mut t.mute, tr("Muet")).changed();
@@ -2425,30 +2466,41 @@ impl AnimApp {
                         .changed();
                 });
                 ui.horizontal(|ui| {
-                    ui.label(tr("Son en glissant"));
-                    egui::ComboBox::from_id_salt("scrub")
-                        .selected_text([tr("Jamais"), tr("En glissant"), tr("Toujours")][self.scrub_mode.min(2) as usize])
-                        .show_ui(ui, |ui| {
-                            ui.selectable_value(&mut self.scrub_mode, 0, tr("Jamais"));
-                            ui.selectable_value(&mut self.scrub_mode, 1, tr("En glissant"));
-                            ui.selectable_value(&mut self.scrub_mode, 2, tr("Toujours"));
-                        });
-                    ui.add(
-                        egui::DragValue::new(&mut self.scrub_secs)
-                            .range(0.02..=2.0)
-                            .speed(0.01)
-                            .suffix(" s"),
-                    );
-                });
-                ui.horizontal(|ui| {
                     if ui.small_button(tr("Remplacer…")).clicked() {
-                        replace = true;
+                        replace = Some(k);
                     }
                     if ui.small_button(tr("Retirer le son")).clicked() {
-                        remove = true;
+                        remove = Some(k);
                     }
                 });
-            }
+            });
+        }
+        if !self.doc.sounds.is_empty() {
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label(tr("Son en glissant"));
+                egui::ComboBox::from_id_salt("scrub")
+                    .selected_text([tr("Jamais"), tr("En glissant"), tr("Toujours")][self.scrub_mode.min(2) as usize])
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut self.scrub_mode, 0, tr("Jamais"));
+                        ui.selectable_value(&mut self.scrub_mode, 1, tr("En glissant"));
+                        ui.selectable_value(&mut self.scrub_mode, 2, tr("Toujours"));
+                    });
+                ui.add(
+                    egui::DragValue::new(&mut self.scrub_secs)
+                        .range(0.02..=2.0)
+                        .speed(0.01)
+                        .suffix(" s"),
+                );
+            });
+        }
+        let add = if self.doc.sounds.is_empty() {
+            tr("Importer un son (WAV, MP3)…")
+        } else {
+            tr("Ajouter une piste son…")
+        };
+        if ui.button(add).clicked() {
+            self.import_sound(None);
         }
         if changed {
             self.doc.dirty = true;
@@ -2456,15 +2508,21 @@ impl AnimApp {
                 self.start_sound();
             }
         }
-        if replace {
-            self.import_sound();
+        if replace.is_some() {
+            self.import_sound(replace);
         }
-        if remove {
-            self.doc.push_structure_undo();
-            self.doc.sound = None;
-            self.clip = None;
+        if let Some(k) = remove {
+            self.doc.sounds.remove(k);
+            if k < self.audio.len() {
+                self.audio.remove(k);
+                self.audio_paths.remove(k);
+            }
+            self.doc.dirty = true;
             self.player.stop();
             self.peaks_key.clear();
+            if self.playing {
+                self.start_sound();
+            }
         }
     }
 
@@ -2871,19 +2929,19 @@ impl AnimApp {
         }
     }
 
-    /// The playback remote: the reference creates its buttons in this order (sub_1403454f0):
-    /// sound, loop and camera toggles, then previous image, play, next image, stop, first image,
+    /// The playback remote, with its buttons in the usual order: sound, loop and camera toggles, then previous image, play, next image, stop, first image,
     /// previous instance, next instance, last image.
     fn panel_remote(&mut self, ui: &mut egui::Ui) {
         ui.horizontal_wrapped(|ui| {
-            let muted = self.doc.sound.as_ref().map(|t| t.mute).unwrap_or(false);
-            if ui.selectable_label(!muted, "🔊").on_hover_text(tr("Son activé / coupé")).clicked() {
-                if let Some(t) = self.doc.sound.as_mut() {
-                    t.mute = !t.mute;
-                    if self.playing {
-                        self.player.stop();
-                        self.start_sound();
-                    }
+            // one switch for every sound track
+            let muted = !self.doc.sounds.is_empty() && self.doc.sounds.iter().all(|t| t.mute);
+            if ui.selectable_label(!muted, "🔊").on_hover_text(tr("Son activé / coupé")).clicked() && !self.doc.sounds.is_empty() {
+                for t in &mut self.doc.sounds {
+                    t.mute = !muted;
+                }
+                if self.playing {
+                    self.player.stop();
+                    self.start_sound();
                 }
             }
             if ui
@@ -3499,7 +3557,10 @@ impl AnimApp {
                             self.tl_fit = Some(TlFit::Selection);
                             ui.close_menu();
                         }
-                        if ui.add_enabled(self.clip.is_some(), egui::Button::new(tr("Le son"))).clicked() {
+                        if ui
+                            .add_enabled(self.audio.iter().any(|c| c.is_some()), egui::Button::new(tr("Le son")))
+                            .clicked()
+                        {
                             self.tl_fit = Some(TlFit::Sound);
                             ui.close_menu();
                         }
@@ -3693,15 +3754,24 @@ impl AnimApp {
                     Some((_, a, b)) => (a.min(nf - 1), b.saturating_sub(a) + 1),
                     None => (0, nf),
                 },
-                TlFit::Sound => match (&self.clip, &self.doc.sound) {
-                    (Some(c), Some(t)) => {
-                        let fps = self.doc.fps.max(1.0);
-                        let a = (t.offset.max(0.0) * fps).floor() as usize;
-                        let n = ((c.duration() + t.offset.min(0.0)).max(0.0) * fps).ceil() as usize;
-                        (a.min(nf - 1), n.max(1))
+                TlFit::Sound => {
+                    // from where the first sound starts to where the last one ends
+                    let fps = self.doc.fps.max(1.0);
+                    let spans: Vec<(f32, f32)> = self
+                        .audio
+                        .iter()
+                        .zip(&self.doc.sounds)
+                        .filter_map(|(c, t)| c.as_ref().map(|c| (t.offset.max(0.0), t.offset + c.duration())))
+                        .collect();
+                    if spans.is_empty() {
+                        (0, nf)
+                    } else {
+                        let a = spans.iter().fold(f32::MAX, |m, s| m.min(s.0));
+                        let b = spans.iter().fold(0.0f32, |m, s| m.max(s.1)).max(a);
+                        let first = ((a * fps).floor() as usize).min(nf - 1);
+                        (first, (((b - a) * fps).ceil() as usize).max(1))
                     }
-                    _ => (0, nf),
-                },
+                }
             };
             self.tl_cell = (cells_w / count.max(1) as f32).clamp(TL_CELL_MIN, TL_CELL_MAX);
             self.tl_cell_shown = self.tl_cell;
@@ -3721,7 +3791,7 @@ impl AnimApp {
             self.tl_cell_shown = cell;
         }
         let max_x = (nf as f32 * cell - cells_w + cell).max(0.0);
-        let sound_rows = if self.peaks.is_empty() { 0 } else { 1 };
+        let sound_rows = self.doc.sounds.len();
         let max_y = ((nl + sound_rows) as f32 * ROW - (area.height() - top)).max(0.0);
         // bring the current frame into view when it changes (scrolling away from it is allowed)
         if self.doc.frame != self.tl_frame_seen {
@@ -3936,9 +4006,9 @@ impl AnimApp {
                 }
             }
         }
-        // sound track row, under the layers
-        if sound_rows == 1 {
-            let y = row_y(nl);
+        // sound track rows, under the layers
+        for (k, track) in self.doc.sounds.iter().enumerate() {
+            let y = row_y(nl + k);
             let p = painter.with_clip_rect(col_clip);
             let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(COL, ROW - 1.0));
             p.rect_filled(rowrect, 0.0, th.panel);
@@ -3947,20 +4017,21 @@ impl AnimApp {
                 0.0,
                 Color32::from_rgb(90, 160, 220),
             );
-            let name = self
-                .doc
-                .sound
-                .as_ref()
-                .and_then(|t| t.path.file_name())
-                .map(|n| n.to_string_lossy().to_string())
-                .unwrap_or_default();
-            let muted = self.doc.sound.as_ref().map(|t| t.mute).unwrap_or(false);
+            let name = track.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+            let muted = track.mute;
+            let missing = self.audio.get(k).is_none_or(|c| c.is_none());
             p.text(
                 pos2(area.left() + 10.0, y + ROW / 2.0),
                 egui::Align2::LEFT_CENTER,
                 format!("♪ {name}"),
                 font.clone(),
-                if muted { text.gamma_multiply(0.4) } else { text },
+                if missing {
+                    Color32::from_rgb(255, 190, 80)
+                } else if muted {
+                    text.gamma_multiply(0.4)
+                } else {
+                    text
+                },
             );
             let g = painter.with_clip_rect(grid_clip);
             g.rect_filled(
@@ -3976,14 +4047,14 @@ impl AnimApp {
                 Color32::from_rgb(90, 160, 220)
             };
             for f in first..last {
-                let v = self.peaks.get(f).copied().unwrap_or(0.0);
+                let v = self.peaks.get(k).and_then(|p| p.get(f)).copied().unwrap_or(0.0);
                 if v <= 0.0 {
                     continue;
                 }
                 let x = cell_x(f);
                 let hh = (ROW - 6.0) * v;
                 g.rect_filled(
-                    egui::Rect::from_center_size(pos2(x + cell / 2.0, y + ROW / 2.0), vec2(cell - 2.0, hh.max(1.0))),
+                    egui::Rect::from_center_size(pos2(x + cell / 2.0, y + ROW / 2.0), vec2((cell - 2.0).max(1.0), hh.max(1.0))),
                     1.0,
                     wave,
                 );
@@ -6772,6 +6843,7 @@ impl eframe::App for AnimApp {
     }
 
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.sync_audio();
         self.keys(ctx);
         if let Some(f) = &self.floating {
             if self.doc.drawing_at(self.doc.current_layer, self.doc.frame) != Some(f.id) {

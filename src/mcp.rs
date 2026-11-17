@@ -320,7 +320,7 @@ impl Server {
             "notes": self.doc.notes.iter().map(|(f, t)| (f.to_string(), json!(t))).collect::<serde_json::Map<_, _>>(),
             "layers_bottom_to_top": layers,
             "paper": hex(self.doc.paper),
-            "sound": self.doc.sound.as_ref().map(|t| json!({"file": t.path.display().to_string(), "volume": (t.volume * 100.0).round(), "offset_frames": (t.offset * self.doc.fps).round(), "mute": t.mute})),
+            "sounds": self.doc.sounds.iter().enumerate().map(|(i, t)| json!({"track": i, "file": t.path.display().to_string(), "volume": (t.volume * 100.0).round(), "offset_frames": (t.offset * self.doc.fps).round(), "mute": t.mute, "fade_in": t.fade_in, "fade_out": t.fade_out})).collect::<Vec<_>>(),
             "paper_texture": format!("{:?}", self.doc.paper_texture).to_lowercase(),
             "light_table": {
                 "active": self.doc.light.active,
@@ -918,20 +918,43 @@ impl Server {
                 Ok(text("Text written."))
             }
             "sound_set" => {
+                let n = self.doc.sounds.len();
+                let track = match a.get("track").and_then(Value::as_u64) {
+                    Some(t) if (t as usize) < n => Some(t as usize),
+                    Some(t) => return Err(format!("sound track {t} does not exist ({n} tracks)")),
+                    None => None,
+                };
                 if a.get("remove").and_then(Value::as_bool).unwrap_or(false) {
-                    self.doc.sound = None;
-                    return Ok(text("Sound removed."));
+                    // one track, or every track when none is named
+                    match track {
+                        Some(t) => {
+                            self.doc.sounds.remove(t);
+                        }
+                        None => self.doc.sounds.clear(),
+                    }
+                    self.doc.dirty = true;
+                    return Ok(text(format!("Sound removed; {} tracks left.", self.doc.sounds.len())));
                 }
+                // which track the settings go to: the one named, a new one (add, or the first
+                // sound of the shot), else the first
+                let mut track = track.unwrap_or(0);
                 if let Some(p) = a.get("path").and_then(Value::as_str) {
                     let clip = crate::sound::Clip::load(std::path::Path::new(p))?;
-                    self.doc.sound = Some(crate::sound::SoundTrack::new(p.into()));
+                    let add = a.get("add").and_then(Value::as_bool).unwrap_or(false);
+                    if add || n == 0 {
+                        self.doc.sounds.push(crate::sound::SoundTrack::new(p.into()));
+                        track = self.doc.sounds.len() - 1;
+                    } else {
+                        self.doc.sounds[track] = crate::sound::SoundTrack::new(p.into());
+                    }
                     let secs = clip.duration();
                     if a.get("fit_length").and_then(Value::as_bool).unwrap_or(false) {
                         let n = (secs * self.doc.fps).ceil() as usize;
                         self.doc.set_length(n.max(1));
                     }
                 }
-                let t = self.doc.sound.as_mut().ok_or("no sound yet: give a path (WAV or MP3)")?;
+                self.doc.dirty = true;
+                let t = self.doc.sounds.get_mut(track).ok_or("no sound yet: give a path (WAV or MP3)")?;
                 if let Some(v) = a.get("volume").and_then(Value::as_f64) {
                     t.volume = (v as f32 / 100.0).clamp(0.0, 2.0);
                 }
@@ -947,7 +970,11 @@ impl Server {
                 if let Some(v) = a.get("fade_out").and_then(Value::as_f64) {
                     t.fade_out = (v as f32).max(0.0);
                 }
-                Ok(text(format!("Sound: {:?}", self.doc.sound)))
+                Ok(text(format!(
+                    "Sound track {track} of {}: {:?}",
+                    self.doc.sounds.len(),
+                    self.doc.sounds[track]
+                )))
             }
             "import_image" => {
                 self.place(a)?;
@@ -1865,8 +1892,8 @@ fn tools() -> Value {
         {"name": "draw_text", "title": "Write text", "description": "Write text (several lines allowed) with its top-left corner at a point. Size is the letter height in pixels (default 100); border in pixels (default 2, red, 0 = none); italic in percent; angle in degrees.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "text": {"type": "string"}, "at": point, "color": color,
             "size": {"type": "number"}, "border": {"type": "number"}, "border_color": color, "italic": {"type": "number"}, "angle": {"type": "number"}}, "required": ["text", "at"]}},
-        {"name": "sound_set", "title": "Sound track", "description": "Set the project's sound track from a WAV or MP3 file and/or change its volume (0-200 %), offset in frames, mute and fades (seconds); remove it with remove=true. fit_length makes the project as long as the sound. Video export includes it.",
-         "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "volume": {"type": "number"}, "offset_frames": {"type": "number"}, "mute": {"type": "boolean"},
+        {"name": "sound_set", "title": "Sound tracks", "description": "The shot's sound tracks, played together. Give a WAV or MP3 path to set a track's file (add=true makes a new track; otherwise track, default 0, is replaced) and/or change that track's volume (0-200 %), offset in frames, mute and fades (seconds); remove=true removes the track (every track when none is named). fit_length makes the shot as long as the sound. Video exports include every track; the film export places each shot's sounds where the shot starts.",
+         "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "track": {"type": "integer", "description": "Sound track index from 0 (default 0)"}, "add": {"type": "boolean"}, "volume": {"type": "number"}, "offset_frames": {"type": "number"}, "mute": {"type": "boolean"},
             "fade_in": {"type": "number"}, "fade_out": {"type": "number"}, "fit_length": {"type": "boolean"}, "remove": {"type": "boolean"}}}},
         {"name": "import_image", "title": "Import a picture", "description": "Place a PNG or JPEG picture into the drawing (scaled to fit unless scale, in percent, is given; centred unless center [x, y] is given).",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "path": {"type": "string"}, "scale": {"type": "number"}, "center": point}, "required": ["path"]}},
@@ -2119,6 +2146,35 @@ mod tests {
         io::save_png(&dir.join("b.png"), &vec![128u8; 8 * 8 * 4], 8, 8).unwrap();
         ok(&mut s, "import_sequence", json!({"folder": dir.display().to_string()}));
         assert_eq!(s.doc.layers.len(), 4);
+        // several sound tracks: a tenth of a second of 8-bit mono WAV
+        let wav = dir.join("beep.wav");
+        let mut bytes = b"RIFF".to_vec();
+        bytes.extend(836u32.to_le_bytes());
+        bytes.extend(b"WAVEfmt ");
+        bytes.extend(16u32.to_le_bytes());
+        bytes.extend([1, 0, 1, 0]);
+        bytes.extend(8000u32.to_le_bytes());
+        bytes.extend(8000u32.to_le_bytes());
+        bytes.extend([1, 0, 8, 0]);
+        bytes.extend(b"data");
+        bytes.extend(800u32.to_le_bytes());
+        bytes.extend((0..800).map(|i| if i % 16 < 8 { 200u8 } else { 56 }));
+        std::fs::write(&wav, bytes).unwrap();
+        let wav = wav.display().to_string();
+        ok(&mut s, "sound_set", json!({"path": wav, "volume": 50}));
+        ok(
+            &mut s,
+            "sound_set",
+            json!({"path": wav, "add": true, "offset_frames": 12, "fade_out": 0.05}),
+        );
+        assert_eq!(s.doc.sounds.len(), 2);
+        assert_eq!((s.doc.sounds[0].volume, s.doc.sounds[1].offset), (0.5, 0.5));
+        ok(&mut s, "sound_set", json!({"track": 1, "mute": true}));
+        assert!(s.doc.sounds[1].mute && !s.doc.sounds[0].mute);
+        ok(&mut s, "sound_set", json!({"track": 0, "remove": true}));
+        assert_eq!(s.doc.sounds.len(), 1);
+        ok(&mut s, "sound_set", json!({"remove": true}));
+        assert!(s.doc.sounds.is_empty());
         let psd = dir.join("t.psd");
         ok(&mut s, "export", json!({"format": "psd", "path": psd.display().to_string()}));
         ok(&mut s, "import_psd", json!({"path": psd.display().to_string()}));

@@ -401,7 +401,8 @@ pub struct Doc {
     pub drawings: Vec<Drawing>,
     pub paper: [u8; 3],
     pub paper_texture: Paper,
-    pub sound: Option<crate::sound::SoundTrack>,
+    /// The shot's sound tracks, played together.
+    pub sounds: Vec<crate::sound::SoundTrack>,
     pub palette: Vec<[u8; 3]>,
     pub camera: crate::camera::Camera,
     pub light: LightTable,
@@ -443,7 +444,7 @@ impl Doc {
             drawings: vec![],
             paper: [255, 255, 255],
             paper_texture: Paper::Smooth,
-            sound: None,
+            sounds: vec![],
             palette: DEFAULT_PALETTE.to_vec(),
             camera: crate::camera::Camera::new(w, h),
             light: LightTable::default(),

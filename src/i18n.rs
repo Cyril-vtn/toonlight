@@ -895,6 +895,7 @@ static TABLE: &[(&str, [&str; 5])] = &[
     ("Choisissez au moins deux calques non verrouillés (Ctrl + clic sur leur nom).", ["Choose at least two unlocked layers (Ctrl + click on their names).", "Elige al menos dos capas no bloqueadas (Ctrl + clic en su nombre).", "Mindestens zwei nicht gesperrte Ebenen wählen (Strg + Klick auf ihren Namen).", "请至少选择两个未锁定的图层（按 Ctrl 点击其名称）。", "ロックされていないレイヤーを2つ以上選んでください（名前を Ctrl + クリック）。"]),
     ("Décaler le calque d'une image plus tard", ["Shift the layer one frame later", "Desplazar la capa una imagen más tarde", "Ebene ein Bild später verschieben", "图层后移一帧", "レイヤーを1コマ後ろへずらす"]),
     ("Décaler le calque d'une image plus tôt", ["Shift the layer one frame earlier", "Desplazar la capa una imagen antes", "Ebene ein Bild früher verschieben", "图层前移一帧", "レイヤーを1コマ前へずらす"]),
+    ("Ajouter une piste son…", ["Add a sound track…", "Añadir una pista de sonido…", "Tonspur hinzufügen…", "添加音轨…", "サウンドトラックを追加…"]),
     // guides and flipping
     ("Grille", ["Grid", "Cuadrícula", "Raster", "网格", "グリッド"]),
     ("Pas de la grille", ["Grid spacing", "Paso de la cuadrícula", "Rasterabstand", "网格间距", "グリッド間隔"]),
