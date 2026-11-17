@@ -77,7 +77,7 @@ pub struct Settings {
 
 /// What a brush setting follows while drawing, numbered like the reference's connection sources
 /// (random 5, pressure 6, speed 7, direction 8, azimuth 9, tilt 10, twist 11; 1000
-/// is "invert"). Tilt, azimuth and twist need pen data the app doesn't receive yet.
+/// is "invert"). Tilt, azimuth and twist need a pen that reports them (see `tablet`).
 #[derive(Clone, Copy, PartialEq, Eq, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub enum ConSource {
     #[default]
@@ -86,15 +86,37 @@ pub enum ConSource {
     Speed,
     Random,
     Direction,
+    /// How far the pen leans (0 upright, 1 flat).
+    Tilt,
+    /// Which way the pen leans.
+    Azimuth,
+    /// The pen's rotation around its own axis.
+    Twist,
 }
 
-pub const ALL_SOURCES: [ConSource; 5] = [
+pub const ALL_SOURCES: [ConSource; 8] = [
     ConSource::Off,
     ConSource::Pressure,
     ConSource::Speed,
     ConSource::Random,
     ConSource::Direction,
+    ConSource::Tilt,
+    ConSource::Azimuth,
+    ConSource::Twist,
 ];
+
+/// What a connection can follow at one point of a stroke, each 0..=1 (direction, azimuth and
+/// twist as parts of a turn).
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub struct Inputs {
+    pub pressure: f32,
+    pub speed: f32,
+    pub random: f32,
+    pub direction: f32,
+    pub tilt: f32,
+    pub azimuth: f32,
+    pub twist: f32,
+}
 
 impl ConSource {
     #[allow(dead_code)] // the number other programs use for it, kept for file exchange
@@ -105,7 +127,15 @@ impl ConSource {
             ConSource::Pressure => 6,
             ConSource::Speed => 7,
             ConSource::Direction => 8,
+            ConSource::Azimuth => 9,
+            ConSource::Tilt => 10,
+            ConSource::Twist => 11,
         }
+    }
+
+    /// A source that is an angle: connected to the dab's angle, it turns the dab by that much.
+    pub fn is_turn(self) -> bool {
+        matches!(self, ConSource::Direction | ConSource::Azimuth | ConSource::Twist)
     }
     pub fn label(self) -> &'static str {
         use crate::i18n::tr;
@@ -115,6 +145,9 @@ impl ConSource {
             ConSource::Speed => tr("Vitesse"),
             ConSource::Random => tr("Hasard"),
             ConSource::Direction => tr("Direction"),
+            ConSource::Tilt => tr("Inclinaison du stylet"),
+            ConSource::Azimuth => tr("Orientation du stylet"),
+            ConSource::Twist => tr("Rotation du stylet"),
         }
     }
 }
@@ -137,13 +170,16 @@ impl Connection {
     }
 
     /// The factor 0..=1 for these inputs (all 0..=1), or None when off.
-    pub fn value(&self, pressure: f32, speed: f32, random: f32, direction: f32) -> Option<f32> {
+    pub fn value(&self, i: &Inputs) -> Option<f32> {
         let x = match self.source {
             ConSource::Off => return None,
-            ConSource::Pressure => pressure,
-            ConSource::Speed => speed,
-            ConSource::Random => random,
-            ConSource::Direction => direction,
+            ConSource::Pressure => i.pressure,
+            ConSource::Speed => i.speed,
+            ConSource::Random => i.random,
+            ConSource::Direction => i.direction,
+            ConSource::Tilt => i.tilt,
+            ConSource::Azimuth => i.azimuth,
+            ConSource::Twist => i.twist,
         }
         .clamp(0.0, 1.0);
         // the curve as an exponent: soft lifts light touches, hard holds them back
@@ -466,6 +502,8 @@ pub struct Stroke {
     /// Movement direction (0..=1 of a turn) and speed (0..=1) of the last segment.
     dir: f32,
     speed: f32,
+    /// The pen's tilt, azimuth and twist (each 0..=1), when a tablet reports them.
+    pen: (f32, f32, f32),
     dabs: u32,
     mode: DrawMode,
     /// Only change pixels that are already drawn, keeping their transparency.
@@ -526,6 +564,7 @@ impl Stroke {
             base_angle: s.angle.to_radians(),
             dir: 0.0,
             speed: 0.0,
+            pen: (0.0, 0.0, 0.0),
             dabs: 0,
             mode: s.mode,
             preserve: false,
@@ -547,28 +586,40 @@ impl Stroke {
         self.to_p(x, y, 1.0, px)
     }
 
+    /// The pen's tilt (0 upright ..= 1 flat), azimuth and twist (0..=1 of a turn) for the points
+    /// that follow, when a tablet reports them.
+    pub fn set_pen(&mut self, tilt: f32, azimuth: f32, twist: f32) {
+        self.pen = (tilt, azimuth, twist);
+    }
+
     fn apply_pressure(&mut self, p: f32) {
-        let p = p.clamp(0.0, 1.0);
         self.dabs = self.dabs.wrapping_add(1);
-        let rnd = hash(self.dabs as i32, 7919);
-        let (spd, dir) = (self.speed, self.dir);
+        let i = Inputs {
+            pressure: p.clamp(0.0, 1.0),
+            speed: self.speed,
+            random: hash(self.dabs as i32, 7919),
+            direction: self.dir,
+            tilt: self.pen.0,
+            azimuth: self.pen.1,
+            twist: self.pen.2,
+        };
         let [cs, cp, ca, cg] = self.con;
-        self.radius = match cs.value(p, spd, rnd, dir) {
+        self.radius = match cs.value(&i) {
             Some(v) => (self.base_radius * v).max(MIN_RADIUS),
             None => self.base_radius,
         };
-        self.power = match cp.value(p, spd, rnd, dir) {
+        self.power = match cp.value(&i) {
             Some(v) => self.base_power * v,
             None => self.base_power,
         };
         // a lighter touch makes a flatter dab
-        self.inv_aspect = match ca.value(p, spd, rnd, dir) {
+        self.inv_aspect = match ca.value(&i) {
             Some(v) => (1.0 / self.base_inv_aspect * v).clamp(0.05, 1.0).recip(),
             None => self.base_inv_aspect,
         };
-        let angle = match (cg.source, cg.value(p, spd, rnd, dir)) {
-            // the dab turns with the stroke
-            (ConSource::Direction, Some(v)) => self.base_angle + v * std::f32::consts::TAU,
+        let angle = match (cg.source, cg.value(&i)) {
+            // the dab turns with the stroke, or with the pen
+            (src, Some(v)) if src.is_turn() => self.base_angle + v * std::f32::consts::TAU,
             (_, Some(v)) => self.base_angle * v,
             _ => self.base_angle,
         };
@@ -996,14 +1047,30 @@ mod tests {
     #[test]
     fn connections_follow_their_source_and_curve() {
         let c = Connection::pressure();
-        assert_eq!(c.value(0.5, 0.0, 0.0, 0.0), Some(0.5));
+        let at = |pressure: f32| Inputs {
+            pressure,
+            ..Inputs::default()
+        };
+        assert_eq!(c.value(&at(0.5)), Some(0.5));
         let soft = Connection { curve: -1.0, ..c };
-        assert!(soft.value(0.5, 0.0, 0.0, 0.0).unwrap() > 0.8, "soft lifts light touches");
+        assert!(soft.value(&at(0.5)).unwrap() > 0.8, "soft lifts light touches");
         let hard = Connection { curve: 1.0, ..c };
-        assert!(hard.value(0.5, 0.0, 0.0, 0.0).unwrap() < 0.1);
+        assert!(hard.value(&at(0.5)).unwrap() < 0.1);
         let inv = Connection { invert: true, ..c };
-        assert_eq!(inv.value(1.0, 0.0, 0.0, 0.0), Some(0.0));
-        assert_eq!(Connection::default().value(1.0, 1.0, 1.0, 1.0), None);
+        assert_eq!(inv.value(&at(1.0)), Some(0.0));
+        assert_eq!(Connection::default().value(&at(1.0)), None);
+        // a pen's tilt drives a setting like the pressure does
+        let tilt = Connection {
+            source: ConSource::Tilt,
+            ..Connection::default()
+        };
+        let leaning = Inputs {
+            tilt: 0.25,
+            ..Inputs::default()
+        };
+        assert_eq!(tilt.value(&leaning), Some(0.25));
+        assert_eq!((ConSource::Azimuth.id(), ConSource::Tilt.id(), ConSource::Twist.id()), (9, 10, 11));
+        assert!(ConSource::Twist.is_turn() && !ConSource::Tilt.is_turn());
         assert_eq!(ConSource::Pressure.id(), 6);
         // a stroke whose size follows the pressure gets thinner when lighter
         let mut s = Tool::Pen.defaults();

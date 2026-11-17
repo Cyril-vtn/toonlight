@@ -18,6 +18,7 @@ mod psd;
 mod select;
 mod settings;
 mod sound;
+mod tablet;
 mod text;
 
 fn main() -> eframe::Result<()> {

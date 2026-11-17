@@ -1743,6 +1743,9 @@ fn connection_arg(v: &Value) -> Result<brush::Connection, String> {
         "speed" => brush::ConSource::Speed,
         "random" => brush::ConSource::Random,
         "direction" => brush::ConSource::Direction,
+        "tilt" => brush::ConSource::Tilt,
+        "azimuth" => brush::ConSource::Azimuth,
+        "twist" => brush::ConSource::Twist,
         other => return Err(format!("source {other}: use off, pressure, speed, random or direction")),
     };
     Ok(brush::Connection {
@@ -1820,7 +1823,7 @@ fn tools() -> Value {
     let color = json!({"description": "Colour as \"#rrggbb\" or [r, g, b]", "oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "integer"}}]});
     let point =
         json!({"type": "array", "items": {"type": "number"}, "minItems": 2, "maxItems": 2, "description": "[x, y] in canvas pixels"});
-    let connection = json!({"type": "object", "properties": {"source": {"type": "string", "enum": ["off", "pressure", "speed", "random", "direction"]}, "invert": {"type": "boolean"}, "curve": {"type": "number"}}});
+    let connection = json!({"type": "object", "properties": {"source": {"type": "string", "enum": ["off", "pressure", "speed", "random", "direction", "tilt", "azimuth", "twist"]}, "invert": {"type": "boolean"}, "curve": {"type": "number"}}});
     let blends: Vec<String> = ALL_BLENDS.iter().map(|b: &Blend| format!("{b:?}").to_lowercase()).collect();
     let papers: Vec<String> = ALL_PAPERS.iter().map(|p: &Paper| format!("{p:?}").to_lowercase()).collect();
     json!([

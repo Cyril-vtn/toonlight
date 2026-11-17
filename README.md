@@ -31,7 +31,8 @@ Installers for every stable version are on the
 - **Drawing**: pencil (with grain), pen, airbrush, brush, wet brush (mixes colours), eraser, fill,
   line, rectangle, ellipse, text, gradient, warp, colour picker; size, power, opacity, aspect and
   angle; 17 draw modes (behind, shade, light, colorize, tint, multiply…); preserve transparency;
-  line smoothing; pen pressure (tablets and touch screens), simulated from speed with a mouse.
+  line smoothing; pen pressure (tablets and touch screens), simulated from speed with a mouse;
+  on macOS also the pen's tilt, direction and rotation, and its eraser end.
 - **Custom brushes** from a selection or a picture, and **tool presets**.
 - **Selections**: rectangle, lasso, magic wand; copy, cut, paste; move, scale, rotate, mirror.
 - **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups,

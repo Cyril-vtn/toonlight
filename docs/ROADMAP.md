@@ -7,11 +7,14 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **54** done, **22** partial, **74** missing.
+Today: **55** done, **23** partial, **72** missing.
 
 ## Next (P1)
 
-1. Drawing: tablet pressure on macOS, pen tilt.
+1. Drawing: try the macOS pen pressure and tilt with real tablets; pen tilt on Windows and Linux.
+2. Layers: join the chosen layers, time ratio / retime; layer marks, collapse.
+3. Sound: tracks for the whole project, lock and colour.
+4. Colour group editor; effect stack presets; undo marks.
 
 ---
 
@@ -26,8 +29,8 @@ Today: **54** done, **22** partial, **74** missing.
 | Brush draw modes (Color, Behind, Erase, Shade, Light, Colorize, Tint…) | ✅ | — |
 | Brush profile editor (curve), opacity maps | ❌ | P2 |
 | Pressure curves (size / power / opacity / angle / aspect connections) | ✅ | — |
-| Pen tilt, pen-tip swap, stylus only | ❌ | P2 |
-| Tablet pressure on macOS | ❌ | P1 |
+| Pen tilt, direction and rotation as brush connections, eraser end (macOS; done); other systems, stylus only | 🟡 | P2 |
+| Tablet pressure on macOS (to be confirmed on real tablets) | ✅ | — |
 | Line smoothing (stabiliser), live and HUD | ✅ | — |
 | Preserve transparency (paint only on existing pixels) | ✅ | — |
 | Stencil (mask from a layer) | ✅ | — |

@@ -6,6 +6,11 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Pen pressure on macOS**: the pressure of a graphics tablet's pen is now read there (the
+  window library doesn't pass it on), so size and power follow it as on Windows and Linux.
+- **Pen tilt** (macOS): brush connections get three new sources — the pen's tilt, the direction
+  it leans in, and its rotation — and the pen's eraser end erases for the stroke, whatever the
+  drawing tool. Not yet tried with a real tablet: reports are welcome.
 - **Several sound tracks per shot**: the Sound panel lists every track (mute, volume, offset,
   fades, replace, remove) and adds more; each has its row and waveform in the timeline; they play
   together. Older versions open such a project with its first track.

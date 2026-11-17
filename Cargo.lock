@@ -3280,9 +3280,12 @@ version = "0.15.0"
 dependencies = [
  "ab_glyph",
  "arboard",
+ "block2 0.6.2",
  "chrono",
  "eframe",
  "image",
+ "objc2 0.6.5",
+ "objc2-app-kit 0.3.2",
  "rfd",
  "rodio",
  "serde",

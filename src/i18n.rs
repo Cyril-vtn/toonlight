@@ -896,6 +896,10 @@ static TABLE: &[(&str, [&str; 5])] = &[
     ("Décaler le calque d'une image plus tard", ["Shift the layer one frame later", "Desplazar la capa una imagen más tarde", "Ebene ein Bild später verschieben", "图层后移一帧", "レイヤーを1コマ後ろへずらす"]),
     ("Décaler le calque d'une image plus tôt", ["Shift the layer one frame earlier", "Desplazar la capa una imagen antes", "Ebene ein Bild früher verschieben", "图层前移一帧", "レイヤーを1コマ前へずらす"]),
     ("Ajouter une piste son…", ["Add a sound track…", "Añadir una pista de sonido…", "Tonspur hinzufügen…", "添加音轨…", "サウンドトラックを追加…"]),
+    // pen tilt
+    ("Inclinaison du stylet", ["Pen tilt", "Inclinación del lápiz", "Stiftneigung", "笔倾斜", "ペンの傾き"]),
+    ("Orientation du stylet", ["Pen direction", "Orientación del lápiz", "Stiftausrichtung", "笔朝向", "ペンの向き"]),
+    ("Rotation du stylet", ["Pen rotation", "Rotación del lápiz", "Stiftdrehung", "笔旋转", "ペンの回転"]),
     // guides and flipping
     ("Grille", ["Grid", "Cuadrícula", "Raster", "网格", "グリッド"]),
     ("Pas de la grille", ["Grid spacing", "Paso de la cuadrícula", "Rasterabstand", "网格间距", "グリッド間隔"]),

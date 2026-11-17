@@ -175,6 +175,10 @@ pub struct AnimApp {
     font: Option<ab_glyph::FontVec>,
     pressure: f32,
     sim_pressure: bool,
+    /// The pen's values when the system reports a tablet (macOS: pressure, tilt, rotation, eraser
+    /// end), and the tool to come back to after a stroke made with the pen's eraser end.
+    pen: Option<crate::tablet::Pen>,
+    eraser_back: Option<Tool>,
     /// Frame to come back to after flipping ("comebacktoorigin=1", Data/flips.conf).
     flip_origin: Option<usize>,
     show_grid: bool,
@@ -319,6 +323,7 @@ impl AnimApp {
         let prefs = crate::prefs::load();
         prefs.apply_globals();
         install_fonts(&cc.egui_ctx);
+        crate::tablet::install();
         let mut app = AnimApp {
             doc: sample_doc(),
             tool: Tool::Pen,
@@ -356,6 +361,8 @@ impl AnimApp {
             font: None,
             pressure: 1.0,
             sim_pressure: false,
+            pen: None,
+            eraser_back: None,
             flip_origin: None,
             show_grid: false,
             grid_size: 100.0,
@@ -4497,10 +4504,13 @@ impl AnimApp {
                     }
                     (f, i.pointer.velocity().length() / self.zoom.max(0.01))
                 });
-                self.pressure = match force {
-                    Some(f) => f.clamp(0.0, 1.0),
-                    None if self.sim_pressure => (1.0 - speed / 4000.0).clamp(0.25, 1.0) * 0.4 + self.pressure * 0.6,
-                    None => 1.0,
+                // a pen the system reports itself (macOS) comes first
+                self.pen = crate::tablet::sample();
+                self.pressure = match (self.pen, force) {
+                    (Some(p), _) => p.pressure,
+                    (None, Some(f)) => f.clamp(0.0, 1.0),
+                    (None, None) if self.sim_pressure => (1.0 - speed / 4000.0).clamp(0.25, 1.0) * 0.4 + self.pressure * 0.6,
+                    (None, None) => 1.0,
                 };
 
                 // ---- selection, gradient and floating piece ----
@@ -4723,6 +4733,11 @@ impl AnimApp {
                     if started {
                         if let Some(p) = pos {
                             let px = to_px(p);
+                            // the pen's eraser end erases, whatever the drawing tool, for this stroke
+                            if self.pen.is_some_and(|p| p.eraser) && self.tool.paints() && self.tool != Tool::Eraser {
+                                self.eraser_back = Some(self.tool);
+                                self.tool = Tool::Eraser;
+                            }
                             self.begin_tool(px);
                         }
                     }
@@ -4735,6 +4750,9 @@ impl AnimApp {
                             let id = s.id;
                             let q = self.smooth_point(px);
                             let s = self.stroke.as_mut().unwrap();
+                            if let Some(p) = self.pen {
+                                s.set_pen(p.tilt(), p.azimuth(), p.twist());
+                            }
                             let r = s.to_p(q.0, q.1, self.pressure, &mut self.doc.drawings[id].px);
                             self.refresh_rect(r);
                         } else if self.custom_stroke.is_some() {
@@ -4749,6 +4767,12 @@ impl AnimApp {
                     }
                 }
                 if !primary {
+                    // back to the drawing tool after a stroke with the pen's eraser end
+                    if let Some(t) = self.eraser_back.take() {
+                        if self.tool == Tool::Eraser {
+                            self.tool = t;
+                        }
+                    }
                     if let Some(mut s) = self.stroke.take() {
                         // catch up: the stroke ends where the pen was lifted
                         if self.smooth_on && self.smooth_catchup {
