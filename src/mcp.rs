@@ -65,6 +65,7 @@ impl Server {
 }
 
 pub fn run() {
+    crate::prefs::load_default_groups();
     let standalone = std::env::args().any(|a| a == "--standalone");
     // with a window open, every command goes to its project (the "bridge"); otherwise this
     // process keeps its own project in memory
@@ -294,7 +295,7 @@ impl Server {
                     "stencil": l.stencil,
                     "opacity": (l.opacity * 100.0).round(),
                     "blend": format!("{:?}", l.blend).to_lowercase(),
-                    "color_group": crate::doc::group_index(l.group).map(|i| json!(i)).unwrap_or_else(|| json!(hex(l.group))),
+                    "color_group": self.doc.group_of(l.group).map(|i| json!(i)).unwrap_or_else(|| json!(hex(l.group))),
                     "light_table": l.onion,
                     "selected": l.selected,
                     "drawings_start_at_frames": self.doc.keys(i).iter().map(|k| k.0).collect::<Vec<_>>(),
@@ -528,7 +529,7 @@ impl Server {
                     // a number picks one of the 13 groups (clamped to 0..12); a colour sets it
                     // directly
                     layer.group = match c.as_u64() {
-                        Some(i) => crate::doc::GROUPS[(i as usize).min(12)],
+                        Some(i) => self.doc.groups[(i as usize).min(12)].color,
                         None => color_arg(c)?,
                     };
                 }
@@ -560,7 +561,15 @@ impl Server {
                         };
                         self.doc.merge_layers(&layers, opts)
                     }
-                    other => return Err(format!("what {other}: use down, visible or selected")),
+                    "join" => {
+                        let layers = if a.get("layers").is_some() {
+                            self.layers_arg(a)?
+                        } else {
+                            self.doc.target_layers()
+                        };
+                        self.doc.join_layers(&layers)
+                    }
+                    other => return Err(format!("what {other}: use down, visible, selected or join")),
                 };
                 if !ok {
                     return Err("nothing to merge: no layer below, fewer than two layers, or a locked layer".into());
@@ -925,12 +934,15 @@ impl Server {
                     None => None,
                 };
                 if a.get("remove").and_then(Value::as_bool).unwrap_or(false) {
-                    // one track, or every track when none is named
+                    // one track, or every track when none is named; locked tracks stay
                     match track {
+                        Some(t) if self.doc.sounds[t].locked => {
+                            return Err(format!("sound track {t} is locked: unlock it first (locked: false)"));
+                        }
                         Some(t) => {
                             self.doc.sounds.remove(t);
                         }
-                        None => self.doc.sounds.clear(),
+                        None => self.doc.sounds.retain(|t| t.locked),
                     }
                     self.doc.dirty = true;
                     return Ok(text(format!("Sound removed; {} tracks left.", self.doc.sounds.len())));
@@ -944,6 +956,8 @@ impl Server {
                     if add || n == 0 {
                         self.doc.sounds.push(crate::sound::SoundTrack::new(p.into()));
                         track = self.doc.sounds.len() - 1;
+                    } else if self.doc.sounds[track].locked {
+                        return Err(format!("sound track {track} is locked: unlock it first (locked: false)"));
                     } else {
                         self.doc.sounds[track] = crate::sound::SoundTrack::new(p.into());
                     }
@@ -955,6 +969,17 @@ impl Server {
                 }
                 self.doc.dirty = true;
                 let t = self.doc.sounds.get_mut(track).ok_or("no sound yet: give a path (WAV or MP3)")?;
+                // a track is unlocked before the other changes of the same call, and locked after them
+                if a.get("locked").and_then(Value::as_bool) == Some(false) {
+                    t.locked = false;
+                }
+                let changes = ["volume", "offset_frames", "mute", "fade_in", "fade_out", "color"];
+                if t.locked && changes.iter().any(|k| a.get(k).is_some()) {
+                    return Err(format!("sound track {track} is locked: unlock it first (locked: false)"));
+                }
+                if let Some(v) = a.get("color").and_then(Value::as_u64) {
+                    t.color = v.min(12) as u8;
+                }
                 if let Some(v) = a.get("volume").and_then(Value::as_f64) {
                     t.volume = (v as f32 / 100.0).clamp(0.0, 2.0);
                 }
@@ -969,6 +994,9 @@ impl Server {
                 }
                 if let Some(v) = a.get("fade_out").and_then(Value::as_f64) {
                     t.fade_out = (v as f32).max(0.0);
+                }
+                if a.get("locked").and_then(Value::as_bool) == Some(true) {
+                    self.doc.sounds[track].locked = true;
                 }
                 Ok(text(format!(
                     "Sound track {track} of {}: {:?}",
@@ -1173,7 +1201,28 @@ impl Server {
                             .collect();
                         Ok(text(json!({"layer": l, "stack": list}).to_string()))
                     }
-                    other => Err(format!("action {other}: use add, key, remove, clear, apply or list")),
+                    "save" => {
+                        let path = std::path::Path::new(str_arg(a, "path")?);
+                        let name = path.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                        let json = crate::fx::stack_to_json(&name, &self.doc.layers[l].fx)?;
+                        std::fs::write(path, json).map_err(|e| e.to_string())?;
+                        Ok(text(format!(
+                            "{} effects saved to {}.",
+                            self.doc.layers[l].fx.len(),
+                            path.display()
+                        )))
+                    }
+                    "load" => {
+                        let t = std::fs::read_to_string(str_arg(a, "path")?).map_err(|e| e.to_string())?;
+                        let preset = crate::fx::stack_from_json(&t)?;
+                        self.doc.push_structure_undo();
+                        self.doc.layers[l].fx = preset.effects;
+                        Ok(text(format!(
+                            "Layer {l} now has the {} effects of the file.",
+                            self.doc.layers[l].fx.len()
+                        )))
+                    }
+                    other => Err(format!("action {other}: use add, key, remove, clear, apply, list, save or load")),
                 }
             }
             "effect" => {
@@ -1424,15 +1473,36 @@ impl Server {
             }
             "color_group" => {
                 // act on every layer of a group and answer how many
-                let g = crate::doc::GROUPS[a.get("group").and_then(Value::as_u64).unwrap_or(0).min(12) as usize];
+                let gi = a.get("group").and_then(Value::as_u64).unwrap_or(0).min(12) as usize;
                 let action = a.get("action").and_then(Value::as_str).unwrap_or("list");
+                // the group editor: one group's colour and name, or every group back to the defaults
+                if action == "set" || action == "reset" {
+                    let mut table = if action == "reset" {
+                        crate::doc::default_groups()
+                    } else {
+                        self.doc.groups.clone()
+                    };
+                    if action == "set" {
+                        if gi == 0 {
+                            return Err("group 0 (no colour) can't be changed: use 1-12".into());
+                        }
+                        if let Some(c) = a.get("color") {
+                            table[gi].color = color_arg(c)?;
+                        }
+                        if let Some(n) = a.get("name").and_then(Value::as_str) {
+                            table[gi].name = n.to_string();
+                        }
+                    }
+                    let n = self.doc.set_groups(&table, &[false; 13]);
+                    return Ok(text(format!("{n} groups changed.")));
+                }
+                let g = self.doc.groups[gi].color;
                 if action == "list" {
-                    let groups: Vec<Value> = crate::doc::GROUPS
-                        .iter()
-                        .enumerate()
-                        .map(|(i, c)| {
-                            let layers: Vec<usize> = (0..self.doc.layers.len()).filter(|&l| self.doc.layers[l].group == *c).collect();
-                            json!({"group": i, "color": hex(*c), "layers": layers})
+                    let groups: Vec<Value> = (0..self.doc.groups.len())
+                        .map(|i| {
+                            let c = self.doc.groups[i].color;
+                            let layers: Vec<usize> = (0..self.doc.layers.len()).filter(|&l| self.doc.layers[l].group == c).collect();
+                            json!({"group": i, "color": hex(c), "name": self.doc.group_name(i), "layers": layers})
                         })
                         .collect();
                     return Ok(text(json!(groups).to_string()));
@@ -1446,7 +1516,11 @@ impl Server {
                         "hide" => layer.visible = false,
                         "select" => layer.selected = true,
                         "deselect" => layer.selected = false,
-                        other => return Err(format!("action {other}: use list, lock, unlock, show, hide, select or deselect")),
+                        other => {
+                            return Err(format!(
+                                "action {other}: use list, set, reset, lock, unlock, show, hide, select or deselect"
+                            ))
+                        }
                     }
                     n += 1;
                 }
@@ -1860,12 +1934,12 @@ fn tools() -> Value {
             "end": {"type": ["integer", "null"]}, "before": {"type": "string", "enum": ["none", "repeat", "pingpong", "hold"]}, "after": {"type": "string", "enum": ["none", "repeat", "pingpong", "hold"]}, "auto_break": {"type": "boolean", "description": "Painting on a held cell makes a new drawing there (project-wide, default true)"}, "auto_stretch": {"type": "boolean", "description": "Painting after a layer's end makes it longer (project-wide, default true); off, painting there is refused"},
             "light_table": {"type": "boolean"}, "opacity": {"type": "number"}, "blend": {"type": "string", "enum": blends},
             "color_group": {"description": "A group number 0-12 (0 = no colour; 1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white) or a colour", "oneOf": [{"type": "integer"}, {"type": "string"}, {"type": "array", "items": {"type": "integer"}}]}}}},
-        {"name": "color_group", "title": "Colour group", "description": "Layers by colour group: list (each group with its colour and layers), or lock, unlock, show, hide, select or deselect every layer of group (0-12); answers how many layers. Selected layers are the ones actions on several layers use (layer_merge what = selected).",
-         "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "lock", "unlock", "show", "hide", "select", "deselect"]}, "group": {"type": "integer"}}}},
+        {"name": "color_group", "title": "Colour group", "description": "Layers by colour group: list (each group with its colour, name and layers), or lock, unlock, show, hide, select or deselect every layer of group (0-12); answers how many layers. Selected layers are the ones actions on several layers use (layer_merge what = selected). set changes the colour and / or name of group 1-12 (its layers follow); reset puts every group back to the defaults.",
+         "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "set", "reset", "lock", "unlock", "show", "hide", "select", "deselect"]}, "group": {"type": "integer"}, "color": color, "name": {"type": "string"}}}},
         {"name": "layer_delete", "title": "Delete layer", "description": "Delete a layer, or several at once with layers (one layer always stays).",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "layers": {"type": "array", "items": {"type": "integer"}}}}, "annotations": {"destructiveHint": true}},
-        {"name": "layer_merge", "title": "Merge layers", "description": "Merge a layer down onto the layer under it (what = down, default), every visible layer into the lowest visible one (what = visible), or the layers listed in `layers` (else the selected ones) into the lowest of them (what = selected). The upper layer's opacity and blending are painted in; holds and before / after behaviours are followed. keep_color_group, keep_instance_names and keep_image_marks (default true) keep the colour group, the drawing names and the image marks.",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "what": {"type": "string", "enum": ["down", "visible", "selected"]}, "layers": {"type": "array", "items": {"type": "integer"}}, "keep_color_group": {"type": "boolean"}, "keep_instance_names": {"type": "boolean"}, "keep_image_marks": {"type": "boolean"}}}},
+        {"name": "layer_merge", "title": "Merge layers", "description": "Merge a layer down onto the layer under it (what = down, default), every visible layer into the lowest visible one (what = visible), or the layers listed in `layers` (else the selected ones) into the lowest of them (what = selected), or those layers put end to end in time, from the bottom up, into one layer (what = join; the reverse of the timing action split). For the merges, the upper layer's opacity and blending are painted in; holds and before / after behaviours are followed. keep_color_group, keep_instance_names and keep_image_marks (default true) keep the colour group, the drawing names and the image marks.",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "what": {"type": "string", "enum": ["down", "visible", "selected", "join"]}, "layers": {"type": "array", "items": {"type": "integer"}}, "keep_color_group": {"type": "boolean"}, "keep_instance_names": {"type": "boolean"}, "keep_image_marks": {"type": "boolean"}}}},
         {"name": "layer_move", "title": "Move layer", "description": "Move a layer up or down in the stack.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "direction": {"type": "string", "enum": ["up", "down"]}}, "required": ["direction"]}},
         {"name": "frame_add", "title": "Add frame", "description": "After the given frame on a layer: a new blank drawing, a duplicate of the drawing, or hold the drawing one more frame. Moves to the new frame.",
@@ -1896,7 +1970,7 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "text": {"type": "string"}, "at": point, "color": color,
             "size": {"type": "number"}, "border": {"type": "number"}, "border_color": color, "italic": {"type": "number"}, "angle": {"type": "number"}}, "required": ["text", "at"]}},
         {"name": "sound_set", "title": "Sound tracks", "description": "The shot's sound tracks, played together. Give a WAV or MP3 path to set a track's file (add=true makes a new track; otherwise track, default 0, is replaced) and/or change that track's volume (0-200 %), offset in frames, mute and fades (seconds); remove=true removes the track (every track when none is named). fit_length makes the shot as long as the sound. Video exports include every track; the film export places each shot's sounds where the shot starts.",
-         "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "track": {"type": "integer", "description": "Sound track index from 0 (default 0)"}, "add": {"type": "boolean"}, "volume": {"type": "number"}, "offset_frames": {"type": "number"}, "mute": {"type": "boolean"},
+         "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "track": {"type": "integer", "description": "Sound track index from 0 (default 0)"}, "add": {"type": "boolean"}, "locked": {"type": "boolean", "description": "A locked track can't be changed, replaced or removed"}, "color": {"type": "integer", "description": "Timeline colour: 0 the usual blue, 1-12 a colour group's colour"}, "volume": {"type": "number"}, "offset_frames": {"type": "number"}, "mute": {"type": "boolean"},
             "fade_in": {"type": "number"}, "fade_out": {"type": "number"}, "fit_length": {"type": "boolean"}, "remove": {"type": "boolean"}}}},
         {"name": "import_image", "title": "Import a picture", "description": "Place a PNG or JPEG picture into the drawing (scaled to fit unless scale, in percent, is given; centred unless center [x, y] is given).",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "path": {"type": "string"}, "scale": {"type": "number"}, "center": point}, "required": ["path"]}},
@@ -1908,8 +1982,8 @@ fn tools() -> Value {
             "dx": {"type": "number"}, "dy": {"type": "number"}, "scale": {"type": "number"}, "angle": {"type": "number"}, "flip_x": {"type": "boolean"}, "flip_y": {"type": "boolean"}}}},
         {"name": "custom_brush", "title": "Custom brush", "description": "Make a custom brush from a picture file (path) or from the drawing inside rect [x0, y0, x1, y1]; then draw_stroke with tool \"custom\" stamps it along the points (size = percent of the picture, spacing = percent of its largest side, default 12.5; giving a color paints its shape in that colour).",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "path": {"type": "string"}, "rect": {"type": "array", "items": {"type": "number"}}}}},
-        {"name": "layer_fx", "title": "Layer effect stack", "description": "The layer's effect stack, applied live without changing the drawings: add (an effect with name and settings as in the effect tool; with frame, its first key), key (index, frame and the same effect's settings: the settings move in a straight line between keys), remove (index), clear, apply (paint them into the drawings for good), list.",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["add", "key", "remove", "clear", "apply", "list"]}, "index": {"type": "integer"}, "frame": frame,
+        {"name": "layer_fx", "title": "Layer effect stack", "description": "The layer's effect stack, applied live without changing the drawings: add (an effect with name and settings as in the effect tool; with frame, its first key), key (index, frame and the same effect's settings: the settings move in a straight line between keys), remove (index), clear, apply (paint them into the drawings for good), list, save (write the stack with its keys to the file `path`) and load (replace the layer's stack with the one of the file `path`).",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["add", "key", "remove", "clear", "apply", "list", "save", "load"]}, "index": {"type": "integer"}, "frame": frame, "path": {"type": "string"},
             "name": {"type": "string", "enum": ["blur", "mosaic", "noise", "wave", "brightness_contrast", "hue_saturation", "invert", "color_key", "luma_key"]},
             "radius": {"type": "number"}, "radius_y": {"type": "number"}, "size": {"type": "number"}, "size_y": {"type": "number"}, "amount": {"type": "number"}, "mono": {"type": "boolean"},
             "amplitude_x": {"type": "number"}, "wavelength_x": {"type": "number"}, "amplitude_y": {"type": "number"}, "wavelength_y": {"type": "number"}, "phase": {"type": "number"},
@@ -2141,6 +2215,17 @@ mod tests {
         assert_eq!(ok(&mut s, "color_group", json!({"action": "hide", "group": 1})), "1 layers.");
         assert!(!s.doc.layers[0].visible);
         ok(&mut s, "color_group", json!({"action": "show", "group": 1}));
+        // the group editor: a new colour and a name; the group's layers follow
+        ok(
+            &mut s,
+            "color_group",
+            json!({"action": "set", "group": 1, "color": "#112233", "name": "Line"}),
+        );
+        assert_eq!(s.doc.layers[0].group, [0x11, 0x22, 0x33]);
+        assert!(ok(&mut s, "color_group", json!({})).contains("\"name\":\"Line\""));
+        assert!(ok(&mut s, "project_info", json!({})).contains("\"color_group\":1"));
+        ok(&mut s, "color_group", json!({"action": "reset"}));
+        assert_eq!(s.doc.layers[0].group, [0xa7, 0x37, 0x37]);
         assert_eq!(s.doc.palette, vec![[16, 32, 48], [1, 2, 3]]);
         let dir = std::env::temp_dir().join(format!("toonlight-mcp-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
@@ -2174,10 +2259,46 @@ mod tests {
         assert_eq!((s.doc.sounds[0].volume, s.doc.sounds[1].offset), (0.5, 0.5));
         ok(&mut s, "sound_set", json!({"track": 1, "mute": true}));
         assert!(s.doc.sounds[1].mute && !s.doc.sounds[0].mute);
+        // a locked track refuses changes until it is unlocked
+        ok(&mut s, "sound_set", json!({"track": 0, "locked": true, "color": 3}));
+        assert_eq!((s.doc.sounds[0].locked, s.doc.sounds[0].color), (true, 3), "changed, then locked");
+        let r = call(
+            &mut s,
+            9,
+            "tools/call",
+            json!({"name": "sound_set", "arguments": {"track": 0, "volume": 80}}),
+        );
+        assert_eq!(r["result"]["isError"], true, "a locked track can't be changed");
+        let r = call(
+            &mut s,
+            9,
+            "tools/call",
+            json!({"name": "sound_set", "arguments": {"track": 0, "remove": true}}),
+        );
+        assert_eq!(r["result"]["isError"], true, "nor removed");
+        ok(&mut s, "sound_set", json!({"track": 0, "locked": false, "volume": 80}));
+        assert_eq!((s.doc.sounds[0].locked, s.doc.sounds[0].volume), (false, 0.8));
+        // layers joined end to end
+        let n = s.doc.layers.len();
+        ok(&mut s, "timing", json!({"action": "split", "layer": 0, "from": 3}));
+        ok(&mut s, "layer_merge", json!({"what": "join", "layers": [0, 1]}));
+        assert_eq!(s.doc.layers.len(), n);
         ok(&mut s, "sound_set", json!({"track": 0, "remove": true}));
         assert_eq!(s.doc.sounds.len(), 1);
         ok(&mut s, "sound_set", json!({"remove": true}));
         assert!(s.doc.sounds.is_empty());
+        // an effect stack saved to a file and put on another layer
+        let fxfile = dir.join("stack.json").display().to_string();
+        ok(
+            &mut s,
+            "layer_fx",
+            json!({"action": "add", "layer": 0, "name": "blur", "radius": 4}),
+        );
+        ok(&mut s, "layer_fx", json!({"action": "save", "layer": 0, "path": fxfile}));
+        ok(&mut s, "layer_fx", json!({"action": "load", "layer": 1, "path": fxfile}));
+        assert_eq!(s.doc.layers[1].fx, s.doc.layers[0].fx);
+        ok(&mut s, "layer_fx", json!({"action": "clear", "layer": 0}));
+        ok(&mut s, "layer_fx", json!({"action": "clear", "layer": 1}));
         let psd = dir.join("t.psd");
         ok(&mut s, "export", json!({"format": "psd", "path": psd.display().to_string()}));
         ok(&mut s, "import_psd", json!({"path": psd.display().to_string()}));

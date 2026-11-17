@@ -250,9 +250,96 @@ pub const GROUP_NAMES: [&str; 13] = [
     "Blanc",
 ];
 
-/// The group number (0-12) of a colour, when it is one of the groups.
-pub fn group_index(c: [u8; 3]) -> Option<usize> {
-    GROUPS.iter().position(|g| *g == c)
+/// A colour group: its colour and its name (empty = the usual name of its place, `GROUP_NAMES`).
+/// A project has 13 of them; a layer belongs to the group whose colour it has.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Group {
+    pub color: [u8; 3],
+    #[serde(default)]
+    pub name: String,
+}
+
+/// The groups as they come: the 13 colours of `GROUPS`, with their usual names.
+pub fn builtin_groups() -> Vec<Group> {
+    GROUPS
+        .iter()
+        .map(|c| Group {
+            color: *c,
+            name: String::new(),
+        })
+        .collect()
+}
+
+/// The person's own default groups ("make the current groups the defaults"), when they set some.
+static DEFAULT_GROUPS: std::sync::Mutex<Option<Vec<Group>>> = std::sync::Mutex::new(None);
+
+/// The groups new projects start with: the person's defaults, else the built-in ones.
+pub fn default_groups() -> Vec<Group> {
+    let own = DEFAULT_GROUPS.lock().ok().and_then(|g| g.clone());
+    own.map(clean_groups).unwrap_or_else(builtin_groups)
+}
+
+/// Set (or, with None, forget) the person's default groups.
+pub fn set_default_groups(groups: Option<Vec<Group>>) {
+    if let Ok(mut g) = DEFAULT_GROUPS.lock() {
+        *g = groups;
+    }
+}
+
+/// A table of exactly 13 groups whose colours all differ: group 0 keeps the "no colour" colour,
+/// missing groups get the built-in ones, and a colour already taken is moved by one step of blue.
+pub fn clean_groups(mut groups: Vec<Group>) -> Vec<Group> {
+    let builtin = builtin_groups();
+    groups.truncate(13);
+    for b in builtin.iter().skip(groups.len()) {
+        groups.push(b.clone());
+    }
+    groups[0].color = default_group();
+    for g in 1..13 {
+        while groups[..g].iter().any(|o| o.color == groups[g].color) {
+            let b = &mut groups[g].color[2];
+            *b = if *b == 255 { 0 } else { *b + 1 };
+        }
+        groups[g].name = groups[g].name.trim().to_string();
+    }
+    groups
+}
+
+/// Groups as a text file: 13 lines "red green blue name", group 0 first.
+pub fn groups_to_text(groups: &[Group]) -> String {
+    groups
+        .iter()
+        .map(|g| {
+            format!("{} {} {} {}", g.color[0], g.color[1], g.color[2], g.name)
+                .trim_end()
+                .to_string()
+                + "\n"
+        })
+        .collect()
+}
+
+/// Read groups from such a text file: each line is three numbers 0-255, then the name. Lines that
+/// don't start with three numbers are skipped; groups the file doesn't have keep the built-in ones.
+pub fn groups_from_text(text: &str) -> Result<Vec<Group>, String> {
+    let mut out = vec![];
+    for line in text.lines() {
+        let mut parts = line.trim().splitn(4, char::is_whitespace);
+        let rgb: Vec<u8> = parts
+            .by_ref()
+            .take(3)
+            .filter_map(|n| n.parse::<u16>().ok().map(|v| v.min(255) as u8))
+            .collect();
+        if rgb.len() == 3 {
+            out.push(Group {
+                color: [rgb[0], rgb[1], rgb[2]],
+                name: parts.next().unwrap_or("").trim().to_string(),
+            });
+        }
+    }
+    if out.is_empty() {
+        return Err("no colour groups in this file".into());
+    }
+    Ok(clean_groups(out))
 }
 
 /// Layer blending modes. Names follow the ones the After Effects import script shipped with the
@@ -379,6 +466,8 @@ enum Undo {
         frames: usize,
         current_layer: usize,
         frame: usize,
+        /// The colour groups: layers belong to a group by its colour, so they go back together.
+        groups: Vec<Group>,
     },
 }
 
@@ -403,6 +492,8 @@ pub struct Doc {
     pub paper_texture: Paper,
     /// The shot's sound tracks, played together.
     pub sounds: Vec<crate::sound::SoundTrack>,
+    /// The 13 colour groups (colour and name) of this project.
+    pub groups: Vec<Group>,
     pub palette: Vec<[u8; 3]>,
     pub camera: crate::camera::Camera,
     pub light: LightTable,
@@ -445,6 +536,7 @@ impl Doc {
             paper: [255, 255, 255],
             paper_texture: Paper::Smooth,
             sounds: vec![],
+            groups: default_groups(),
             palette: DEFAULT_PALETTE.to_vec(),
             camera: crate::camera::Camera::new(w, h),
             light: LightTable::default(),
@@ -678,6 +770,7 @@ impl Doc {
             frames: self.frames,
             current_layer: self.current_layer,
             frame: self.frame,
+            groups: self.groups.clone(),
         };
         self.push(u);
     }
@@ -694,12 +787,14 @@ impl Doc {
                 frames,
                 current_layer,
                 frame,
+                groups,
             } => {
                 let now = Undo::Structure {
                     layers: std::mem::replace(&mut self.layers, layers),
                     frames: self.frames,
                     current_layer: self.current_layer,
                     frame: self.frame,
+                    groups: std::mem::replace(&mut self.groups, groups),
                 };
                 self.frames = frames;
                 self.current_layer = current_layer.min(self.layers.len() - 1);
@@ -1420,6 +1515,60 @@ impl Doc {
         self.dirty = true;
     }
 
+    /// The group number (0-12) of a colour, when it is one of this project's groups.
+    pub fn group_of(&self, c: [u8; 3]) -> Option<usize> {
+        self.groups.iter().position(|g| g.color == c)
+    }
+
+    /// The name of a group: the one it was given, else the usual name of its place.
+    pub fn group_name(&self, g: usize) -> String {
+        match self.groups.get(g) {
+            Some(gr) if !gr.name.is_empty() => gr.name.clone(),
+            _ => crate::i18n::tr(GROUP_NAMES[g.min(12)]).to_string(),
+        }
+    }
+
+    /// Give the project a new table of groups (from the editor, a file or the defaults). Groups
+    /// flagged in `keep` (protected) and group 0 stay as they are; the layers of a group whose
+    /// colour changes take the new colour, so they stay in their group. Returns how many groups
+    /// changed.
+    pub fn set_groups(&mut self, table: &[Group], keep: &[bool; 13]) -> usize {
+        let mut new = self.groups.clone();
+        for g in 1..13 {
+            if !keep[g] {
+                if let Some(t) = table.get(g) {
+                    new[g] = t.clone();
+                }
+            }
+        }
+        new.resize(13, builtin_groups()[0].clone());
+        // a new colour that another group already has is moved a step, so the group that was
+        // not touched keeps its own
+        for g in 1..13 {
+            if new[g].color != self.groups[g].color {
+                while (0..13).any(|h| h != g && new[h].color == new[g].color) {
+                    let b = &mut new[g].color[2];
+                    *b = if *b == 255 { 0 } else { *b + 1 };
+                }
+            }
+        }
+        let new = clean_groups(new);
+        let changed = (1..13).filter(|&g| new[g] != self.groups[g]).count();
+        if changed == 0 {
+            return 0;
+        }
+        self.push_structure_undo();
+        for li in 0..self.layers.len() {
+            // by the old table, so two groups can swap their colours
+            if let Some(g) = self.group_of(self.layers[li].group) {
+                self.layers[li].group = new[g].color;
+            }
+        }
+        self.groups = new;
+        self.dirty = true;
+        changed
+    }
+
     /// The layers an action applies to: the current layer and every layer selected with it,
     /// from the bottom up.
     pub fn target_layers(&self) -> Vec<usize> {
@@ -1618,6 +1767,47 @@ impl Doc {
         }
         self.current_layer = sel[0];
         self.layers[sel[0]].selected = false;
+        true
+    }
+
+    /// Join `layers` end to end into the lowest of them, from the bottom up: each layer's own
+    /// frames (first drawing to end) follow the frames of the one before. The reverse of a split.
+    /// Returns false with fewer than two layers, a locked one or one without drawings.
+    pub fn join_layers(&mut self, layers: &[usize]) -> bool {
+        let mut sel: Vec<usize> = layers.iter().copied().filter(|&i| i < self.layers.len()).collect();
+        sel.sort_unstable();
+        sel.dedup();
+        let spans: Vec<(usize, usize)> = sel.iter().filter_map(|&i| self.layer_span(i)).collect();
+        if sel.len() < 2 || spans.len() != sel.len() || sel.iter().any(|&i| self.layers[i].locked) {
+            return false;
+        }
+        self.push_structure_undo();
+        // the first layer up to its own end, then every other layer's own frames
+        let mut cels: Vec<Option<usize>> = self.layers[sel[0]].cels[..=spans[0].1].to_vec();
+        let mut names = self.layers[sel[0]].names.clone();
+        let mut marks = self.layers[sel[0]].marks.clone();
+        for (&li, &(start, end)) in sel.iter().zip(&spans).skip(1) {
+            let l = &self.layers[li];
+            cels.extend_from_slice(&l.cels[start..=end]);
+            names.extend(l.names.iter().map(|(id, n)| (*id, n.clone())));
+            marks.extend(l.marks.iter().map(|(id, m)| (*id, *m)));
+        }
+        let last = &self.layers[*sel.last().unwrap()];
+        // the joined layer ends like its last part did
+        let (end, post) = (last.end.map(|_| cels.len() - 1), last.post);
+        let first = &mut self.layers[sel[0]];
+        first.cels = cels;
+        first.names = names;
+        first.marks = marks;
+        first.end = end;
+        first.post = post;
+        first.selected = false;
+        for &li in sel.iter().skip(1).rev() {
+            self.layers.remove(li);
+        }
+        self.current_layer = sel[0];
+        self.pad_all();
+        self.dirty = true;
         true
     }
 
@@ -2675,6 +2865,22 @@ mod tests {
         assert_eq!(d.layers.len(), 1);
         assert!(d.split_layer(0, 2), "splitting on a drawing moves it");
         assert_eq!((keys(&d, 0), keys(&d, 1)), (vec![0, 1], vec![2, 3]));
+        // joining puts the two parts back end to end
+        assert!(d.join_layers(&[0, 1]));
+        assert_eq!((d.layers.len(), keys(&d, 0), d.frames), (1, vec![0, 1, 2, 3], 8));
+        assert_eq!(
+            (d.layers[0].end, d.layers[0].post),
+            (None, Behavior::Hold),
+            "it ends like its last part"
+        );
+        assert_eq!(d.instance_name(0, 3).as_deref(), Some("last"));
+        // two separate layers: the second one's frames come after the first one's end
+        d.layers[0].end = Some(3);
+        d.add_layer(); // one drawing at frame 0, to the end of the project
+        d.layers[1].end = Some(1);
+        assert!(d.join_layers(&[1, 0]));
+        assert_eq!((keys(&d, 0), d.layers[0].end), (vec![0, 1, 2, 3, 4], Some(5)));
+        assert!(!d.join_layers(&[0]), "one layer alone can't be joined");
     }
 
     #[test]
@@ -2700,6 +2906,60 @@ mod tests {
         assert_eq!(d.layers.len(), 1);
         assert!(d.undo());
         assert_eq!(d.layers.len(), 3);
+    }
+
+    #[test]
+    fn colour_groups_can_be_edited() {
+        let mut d = doc4();
+        d.add_layer();
+        d.layers[0].group = GROUPS[1];
+        d.layers[1].group = GROUPS[2];
+        assert_eq!((d.group_of(d.layers[0].group), d.group_of(d.layers[1].group)), (Some(1), Some(2)));
+        // groups 1 and 2 swap their colours, group 3 gets a name and group 4 a colour already taken
+        let mut t = d.groups.clone();
+        t[1].color = GROUPS[2];
+        t[2].color = GROUPS[1];
+        t[3].name = " Shadows ".into();
+        t[4].color = GROUPS[5];
+        let mut keep = [false; 13];
+        assert_eq!(d.set_groups(&t, &keep), 4);
+        assert_eq!(
+            (d.group_of(d.layers[0].group), d.group_of(d.layers[1].group)),
+            (Some(1), Some(2)),
+            "layers stay in their group"
+        );
+        assert_eq!(d.layers[0].group, GROUPS[2]);
+        assert_eq!(d.group_name(3), "Shadows");
+        assert_ne!(d.groups[4].color, d.groups[5].color, "two groups never share a colour");
+        assert_eq!(d.groups[5].color, GROUPS[5], "the group that was not touched keeps its colour");
+        // a protected group keeps its colour and name
+        keep[1] = true;
+        assert_eq!(d.set_groups(&builtin_groups(), &keep), 3);
+        assert_eq!(d.groups[1].color, GROUPS[2]);
+        let c = GROUPS[2];
+        assert_eq!(
+            d.groups[2].color,
+            [c[0], c[1], c[2] + 1],
+            "its own colour is taken by the protected group: one step away"
+        );
+        assert_eq!(
+            (d.groups[4].color, d.group_name(3)),
+            (GROUPS[4], crate::i18n::tr(GROUP_NAMES[3]).to_string())
+        );
+        assert_eq!(d.set_groups(&builtin_groups(), &keep), 0, "nothing left to change");
+        // undo brings the table and the layers back together
+        assert!(d.undo());
+        assert_eq!(d.group_name(3), "Shadows");
+        assert_eq!(d.group_of(d.layers[1].group), Some(2));
+        // the text file: 13 lines "r g b name"
+        let text = groups_to_text(&d.groups);
+        assert_eq!(text.lines().count(), 13);
+        assert!(text.lines().nth(3).unwrap().ends_with(" Shadows"));
+        assert_eq!(groups_from_text(&text).unwrap(), d.groups);
+        let part = groups_from_text("# my groups\n120 140 140 none\n10 20 30 Line art\n").unwrap();
+        assert_eq!((part.len(), part[1].color, part[1].name.as_str()), (13, [10, 20, 30], "Line art"));
+        assert_eq!(part[2].color, GROUPS[2], "groups the file doesn't have keep the built-in colours");
+        assert!(groups_from_text("hello").is_err());
     }
 
     #[test]

@@ -182,6 +182,71 @@ impl Effect {
     }
 }
 
+/// A saved effect stack (a preset): a name and the effects with their keys, in order.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FxPreset {
+    pub name: String,
+    pub effects: Vec<FxEntry>,
+}
+
+/// An effect stack as a file.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct FxFile {
+    format: String,
+    version: u32,
+    #[serde(default)]
+    name: String,
+    effects: Vec<FxEntry>,
+}
+
+const FX_FILE: &str = "toonlight-fx-stack";
+
+/// An effect stack as the text of a file (JSON).
+pub fn stack_to_json(name: &str, effects: &[FxEntry]) -> Result<String, String> {
+    let f = FxFile {
+        format: FX_FILE.into(),
+        version: 1,
+        name: name.to_string(),
+        effects: effects.to_vec(),
+    };
+    serde_json::to_string_pretty(&f).map_err(|e| e.to_string())
+}
+
+/// Read an effect stack written by `stack_to_json`.
+pub fn stack_from_json(text: &str) -> Result<FxPreset, String> {
+    let f: FxFile = serde_json::from_str(text).map_err(|e| e.to_string())?;
+    if f.format != FX_FILE {
+        return Err(crate::i18n::tr("Ce fichier n'est pas une pile d'effets.").into());
+    }
+    Ok(FxPreset {
+        name: f.name,
+        effects: f.effects,
+    })
+}
+
+fn presets_path() -> Option<std::path::PathBuf> {
+    crate::i18n::config_dir().map(|d| d.join("fx-presets.json"))
+}
+
+/// The effect stacks saved as presets, kept in the settings folder.
+pub fn load_presets() -> Vec<FxPreset> {
+    presets_path()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice(&b).ok())
+        .unwrap_or_default()
+}
+
+pub fn save_presets(presets: &[FxPreset]) {
+    if let Some(p) = presets_path() {
+        if let Some(d) = p.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        if let Ok(b) = serde_json::to_vec_pretty(presets) {
+            let _ = std::fs::write(p, b);
+        }
+    }
+}
+
 /// One effect of a layer's stack: its settings, keys (frame → settings) that animate it, and
 /// whether it is on.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -534,6 +599,24 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn an_effect_stack_survives_a_file() {
+        let mut blur = FxEntry::new(Effect::Blur { rx: 3.0, ry: 0.0 });
+        blur.keys = vec![(0, Effect::Blur { rx: 3.0, ry: 0.0 }), (12, Effect::Blur { rx: 9.0, ry: 0.0 })];
+        let mut invert = FxEntry::new(Effect::Invert);
+        invert.on = false;
+        let stack = vec![blur, invert];
+        let text = stack_to_json("Soft glow", &stack).unwrap();
+        let back = stack_from_json(&text).unwrap();
+        assert_eq!(
+            (back.name.as_str(), &back.effects),
+            ("Soft glow", &stack),
+            "effects, keys and switches come back"
+        );
+        assert!(stack_from_json("{\"format\":\"something-else\",\"version\":1,\"effects\":[]}").is_err());
+        assert!(stack_from_json("not a file").is_err());
+    }
 
     #[test]
     fn keys_animate_an_effect() {

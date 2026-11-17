@@ -6,6 +6,21 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Colour group editor** (Colour groups panel > ☰ > Edit the groups…): rename groups 1-12 and
+  change their colours (their layers follow), go back to the defaults, make the current groups
+  the defaults for new projects, save them to a text file ("red green blue name" per line) or
+  load one. Protected groups keep their colour and name. The groups are saved in the project
+  and one undo step brings them back.
+- **Effect stack presets**: in the layer effects window, "Presets" saves the layer's stack (with
+  its keys) under a name, puts a saved stack on another layer, and saves / loads a stack as a
+  file.
+- **Join layers** (Layer menu): puts the chosen layers end to end in one layer, from the bottom
+  up — the reverse of a split.
+- **Sound tracks: lock and colour**: a locked track can't be changed or removed; each track can
+  take a colour group's colour in the timeline.
+- AI (MCP): `color_group` takes `set` (colour, name) and `reset`; `layer_fx` takes `save` and
+  `load`; `layer_merge` takes `what: join`; `sound_set` takes `locked` and `color`.
+- New start option `--groups` (opens the colour group editor, for checks).
 - **Pen pressure on macOS**: the pressure of a graphics tablet's pen is now read there (the
   window library doesn't pass it on), so size and power follow it as on Windows and Linux.
 - **Pen tilt** (macOS): brush connections get three new sources — the pen's tilt, the direction

@@ -23,6 +23,12 @@ pub struct SoundTrack {
     pub fade_in: f32,
     #[serde(default)]
     pub fade_out: f32,
+    /// A locked track can't be changed or removed until it is unlocked.
+    #[serde(default)]
+    pub locked: bool,
+    /// The track's colour in the timeline: 0 = the usual blue, 1-12 = a colour group's colour.
+    #[serde(default)]
+    pub color: u8,
 }
 
 fn one() -> f32 {
@@ -38,6 +44,8 @@ impl SoundTrack {
             mute: false,
             fade_in: 0.0,
             fade_out: 0.0,
+            locked: false,
+            color: 0,
         }
     }
 }

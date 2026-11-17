@@ -35,6 +35,9 @@ enum TlFit {
 /// Open the shortcuts window at start (`--shortcuts`, for checks).
 pub static OPEN_SHORTCUTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Open the colour group editor at start (`--groups`, for checks).
+pub static OPEN_GROUPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Open the storyboard window at start (`--storyboard`, for checks).
 pub static OPEN_STORYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -298,17 +301,22 @@ pub struct AnimApp {
     /// (+0xad).
     group_listed: [bool; 13],
     group_protect: [bool; 13],
-    /// Groups whose layers the timeline shows (reference +0xa0, all on).
+    /// Groups whose layers the timeline shows (all on at start).
     group_in_timeline: [bool; 13],
+    /// The colour group editor: the table being changed, applied in one go.
+    group_edit: Option<Vec<crate::doc::Group>>,
     /// The length "Stretch layer" gives, and the frames "Shift" and "Slide" move by.
     stretch_len: usize,
     shift_n: i64,
     /// AI commands arriving from `toonlight --mcp` (the bridge), and the tool state kept between them.
     bridge: Option<crate::mcp::BridgeRequests>,
     bridge_srv: Option<crate::mcp::Server>,
-    /// The layer effect stack window, and the effect picked in it.
+    /// The layer effect stack window, the effect picked in it, the effect stacks saved as
+    /// presets and the name the next one gets.
     show_fx_stack: bool,
     fx_pick: usize,
+    fx_presets: Vec<crate::fx::FxPreset>,
+    fx_preset_name: String,
     /// The exposure-sheet cell being typed in: (layer, frame, text).
     xs_edit: Option<(usize, usize, String)>,
     status: String,
@@ -322,6 +330,7 @@ impl AnimApp {
         i18n::set_lang(i18n::load_lang());
         let prefs = crate::prefs::load();
         prefs.apply_globals();
+        crate::prefs::load_default_groups();
         install_fonts(&cc.egui_ctx);
         crate::tablet::install();
         let mut app = AnimApp {
@@ -453,12 +462,15 @@ impl AnimApp {
             group_listed: [true; 13],
             group_protect: [false; 13],
             group_in_timeline: [true; 13],
+            group_edit: None,
             stretch_len: 24,
             shift_n: 1,
             show_fx_stack: false,
             bridge: None,
             bridge_srv: None,
             fx_pick: 0,
+            fx_presets: crate::fx::load_presets(),
+            fx_preset_name: String::new(),
             status: tr("Exemple chargé : une balle qui rebondit. Fichier > Nouveau pour une page blanche.").into(),
             new_dialog: None,
             shot: match screenshot {
@@ -469,6 +481,9 @@ impl AnimApp {
         };
         if let Some(p) = open {
             app.open_path(p);
+        }
+        if OPEN_GROUPS.load(std::sync::atomic::Ordering::Relaxed) {
+            app.group_edit = Some(app.doc.groups.clone());
         }
         apply_theme(&cc.egui_ctx, &THEMES[app.theme]);
         if matches!(app.shot, Shot::None) {
@@ -895,6 +910,17 @@ impl AnimApp {
         } else {
             self.status = tr("Placez-vous après le premier dessin du calque, avant sa fin, pour le scinder.").into();
         }
+    }
+
+    /// Put the chosen layers end to end in one layer.
+    fn join_selected(&mut self) {
+        self.commit_floating();
+        let targets = self.doc.target_layers();
+        if !self.doc.join_layers(&targets) {
+            self.status = tr("Choisissez au moins deux calques non verrouillés qui ont des dessins.").into();
+        }
+        self.cell_sel = None;
+        self.needs_full = true;
     }
 
     fn merge_selected(&mut self) {
@@ -1395,6 +1421,92 @@ impl AnimApp {
                         });
                     if ui.button(tr("+ Ajouter")).clicked() {
                         self.doc.layers[l].fx.push(crate::fx::FxEntry::new(ALL_EFFECTS[self.fx_pick]));
+                    }
+                    // saved stacks: taking one replaces the layer's stack (one undo step)
+                    let mut take: Option<Vec<crate::fx::FxEntry>> = None;
+                    ui.menu_button(tr("Préréglages"), |ui| {
+                        let mut drop = None;
+                        for (i, p) in self.fx_presets.iter().enumerate() {
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .button(&p.name)
+                                    .on_hover_text(trf("{} effets : remplace la pile du calque", &[&p.effects.len()]))
+                                    .clicked()
+                                {
+                                    take = Some(p.effects.clone());
+                                    ui.close_menu();
+                                }
+                                if ui.small_button("✕").on_hover_text(tr("Supprimer ce préréglage")).clicked() {
+                                    drop = Some(i);
+                                }
+                            });
+                        }
+                        if let Some(i) = drop {
+                            self.fx_presets.remove(i);
+                            crate::fx::save_presets(&self.fx_presets);
+                        }
+                        if !self.fx_presets.is_empty() {
+                            ui.separator();
+                        }
+                        let stack = self.doc.layers[l].fx.clone();
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut self.fx_preset_name)
+                                    .hint_text(tr("Nom"))
+                                    .desired_width(120.0),
+                            );
+                            let name = self.fx_preset_name.trim().to_string();
+                            if ui
+                                .add_enabled(!stack.is_empty() && !name.is_empty(), egui::Button::new(tr("Enregistrer la pile")))
+                                .on_hover_text(tr("Garde les effets de ce calque, avec leurs clés, sous ce nom"))
+                                .clicked()
+                            {
+                                // a preset of the same name is replaced
+                                self.fx_presets.retain(|p| p.name != name);
+                                self.fx_presets.push(crate::fx::FxPreset {
+                                    name,
+                                    effects: stack.clone(),
+                                });
+                                crate::fx::save_presets(&self.fx_presets);
+                                self.fx_preset_name.clear();
+                                ui.close_menu();
+                            }
+                        });
+                        ui.separator();
+                        if ui
+                            .add_enabled(!stack.is_empty(), egui::Button::new(tr("Enregistrer dans un fichier…")))
+                            .clicked()
+                        {
+                            ui.close_menu();
+                            if let Some(p) = rfd::FileDialog::new()
+                                .add_filter(tr("Pile d'effets"), &["json"])
+                                .set_file_name("effects.json")
+                                .save_file()
+                            {
+                                let name = p.file_stem().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                                if let Err(e) =
+                                    crate::fx::stack_to_json(&name, &stack).and_then(|t| std::fs::write(&p, t).map_err(|e| e.to_string()))
+                                {
+                                    self.status = trf("Échec de l'enregistrement : {}", &[&e]);
+                                }
+                            }
+                        }
+                        if ui.button(tr("Charger un fichier…")).clicked() {
+                            ui.close_menu();
+                            if let Some(p) = rfd::FileDialog::new().add_filter(tr("Pile d'effets"), &["json"]).pick_file() {
+                                match std::fs::read_to_string(&p)
+                                    .map_err(|e| e.to_string())
+                                    .and_then(|t| crate::fx::stack_from_json(&t))
+                                {
+                                    Ok(preset) => take = Some(preset.effects),
+                                    Err(e) => self.status = trf("Échec de l'ouverture : {}", &[&e]),
+                                }
+                            }
+                        }
+                    });
+                    if let Some(effects) = take {
+                        self.doc.push_structure_undo();
+                        self.doc.layers[l].fx = effects;
                     }
                 });
                 ui.separator();
@@ -2087,6 +2199,19 @@ impl AnimApp {
                         self.merge_selected();
                         ui.close_menu();
                     }
+                    if ui
+                        .add_enabled(
+                            self.doc.target_layers().len() > 1,
+                            egui::Button::new(tr("Joindre les calques choisis")),
+                        )
+                        .on_hover_text(tr(
+                            "Met les calques choisis bout à bout dans un seul calque, du bas vers le haut (l'inverse de scinder).",
+                        ))
+                        .clicked()
+                    {
+                        self.join_selected();
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui
                         .button(tr("Choisir tous les calques"))
@@ -2437,48 +2562,79 @@ impl AnimApp {
                 if self.audio.get(k).is_none_or(|c| c.is_none()) {
                     ui.colored_label(Color32::from_rgb(255, 190, 80), tr("Fichier introuvable"));
                 }
-                changed |= ui.checkbox(&mut t.mute, tr("Muet")).changed();
-                let mut vol = t.volume * 100.0;
-                if ui
-                    .add(egui::Slider::new(&mut vol, 0.0..=200.0).text(tr("Volume")).suffix(" %"))
-                    .changed()
-                {
-                    t.volume = vol / 100.0;
-                    changed = true;
-                }
-                let mut off_frames = (t.offset * fps).round() as i32;
+                let colors = &self.doc.groups;
                 ui.horizontal(|ui| {
-                    ui.label(tr("Décalage"));
+                    changed |= ui
+                        .checkbox(&mut t.locked, tr("Verrouillée"))
+                        .on_hover_text(tr("Une piste verrouillée ne peut être ni modifiée ni retirée"))
+                        .changed();
+                    // the track's colour in the timeline: the usual blue, or a colour group's
+                    let now = sound_color(t.color, colors);
+                    ui.menu_button(egui::RichText::new("■").color(now), |ui| {
+                        ui.horizontal(|ui| {
+                            for c in 0..=12u8 {
+                                let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                                ui.painter().rect_filled(r, 3.0, sound_color(c, colors));
+                                if t.color == c {
+                                    ui.painter()
+                                        .rect_stroke(r, 3.0, Line::new(2.0_f32, Color32::WHITE), StrokeKind::Inside);
+                                }
+                                if resp.clicked() && !t.locked {
+                                    t.color = c;
+                                    changed = true;
+                                    ui.close_menu();
+                                }
+                            }
+                        });
+                    })
+                    .response
+                    .on_hover_text(tr("Couleur de la piste dans la timeline"));
+                });
+                let locked = t.locked;
+                ui.add_enabled_ui(!locked, |ui| {
+                    changed |= ui.checkbox(&mut t.mute, tr("Muet")).changed();
+                    let mut vol = t.volume * 100.0;
                     if ui
-                        .add(
-                            egui::DragValue::new(&mut off_frames)
-                                .range(-100000..=100000)
-                                .suffix(format!(" {}", tr("images"))),
-                        )
+                        .add(egui::Slider::new(&mut vol, 0.0..=200.0).text(tr("Volume")).suffix(" %"))
                         .changed()
                     {
-                        t.offset = off_frames as f32 / fps;
+                        t.volume = vol / 100.0;
                         changed = true;
                     }
-                });
-                ui.horizontal(|ui| {
-                    ui.label(tr("Fondu"));
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut t.fade_in).range(0.0..=60.0).speed(0.05).suffix(" s"))
-                        .on_hover_text(tr("Fondu d'entrée"))
-                        .changed();
-                    changed |= ui
-                        .add(egui::DragValue::new(&mut t.fade_out).range(0.0..=60.0).speed(0.05).suffix(" s"))
-                        .on_hover_text(tr("Fondu de sortie"))
-                        .changed();
-                });
-                ui.horizontal(|ui| {
-                    if ui.small_button(tr("Remplacer…")).clicked() {
-                        replace = Some(k);
-                    }
-                    if ui.small_button(tr("Retirer le son")).clicked() {
-                        remove = Some(k);
-                    }
+                    let mut off_frames = (t.offset * fps).round() as i32;
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Décalage"));
+                        if ui
+                            .add(
+                                egui::DragValue::new(&mut off_frames)
+                                    .range(-100000..=100000)
+                                    .suffix(format!(" {}", tr("images"))),
+                            )
+                            .changed()
+                        {
+                            t.offset = off_frames as f32 / fps;
+                            changed = true;
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Fondu"));
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut t.fade_in).range(0.0..=60.0).speed(0.05).suffix(" s"))
+                            .on_hover_text(tr("Fondu d'entrée"))
+                            .changed();
+                        changed |= ui
+                            .add(egui::DragValue::new(&mut t.fade_out).range(0.0..=60.0).speed(0.05).suffix(" s"))
+                            .on_hover_text(tr("Fondu de sortie"))
+                            .changed();
+                    });
+                    ui.horizontal(|ui| {
+                        if ui.small_button(tr("Remplacer…")).clicked() {
+                            replace = Some(k);
+                        }
+                        if ui.small_button(tr("Retirer le son")).clicked() {
+                            remove = Some(k);
+                        }
+                    });
                 });
             });
         }
@@ -3019,17 +3175,16 @@ impl AnimApp {
         if li == self.doc.current_layer {
             return true;
         }
-        match crate::doc::group_index(self.doc.layers[li].group) {
+        match self.doc.group_of(self.doc.layers[li].group) {
             Some(g) => self.group_in_timeline[g],
             None => true,
         }
     }
 
     fn panel_groups(&mut self, ui: &mut egui::Ui) {
-        use crate::doc::{GROUPS, GROUP_NAMES};
         ui.menu_button("☰", |ui| {
             for (g, on) in self.group_listed.iter_mut().enumerate() {
-                ui.checkbox(on, format!("{g}: {}", tr(GROUP_NAMES[g])));
+                ui.checkbox(on, format!("{g}: {}", self.doc.group_name(g)));
             }
             ui.separator();
             if ui.button(tr("Tout afficher")).clicked() {
@@ -3038,15 +3193,20 @@ impl AnimApp {
             if ui.button(tr("Tout masquer")).clicked() {
                 self.group_listed = [false; 13];
             }
+            ui.separator();
+            if ui.button(tr("Modifier les groupes…")).clicked() {
+                self.group_edit = Some(self.doc.groups.clone());
+                ui.close_menu();
+            }
         })
         .response
         .on_hover_text(tr("Groupes affichés dans ce panneau"));
         let cl = self.doc.current_layer;
-        for g in 0..GROUPS.len() {
+        for g in 0..self.doc.groups.len().min(13) {
             if !self.group_listed[g] {
                 continue;
             }
-            let col = GROUPS[g];
+            let col = self.doc.groups[g].color;
             let members: Vec<usize> = (0..self.doc.layers.len()).filter(|&l| self.doc.layers[l].group == col).collect();
             let row = ui.horizontal(|ui| {
                 let (r, _) = ui.allocate_exact_size(vec2(14.0, 14.0), Sense::hover());
@@ -3054,7 +3214,7 @@ impl AnimApp {
                 ui.painter()
                     .rect_stroke(r, 2.0, Line::new(1.0_f32, Color32::BLACK), StrokeKind::Inside);
                 let current = self.doc.layers.get(cl).map(|l| l.group == col).unwrap_or(false);
-                let label = format!("{g}: {}", tr(GROUP_NAMES[g]));
+                let label = format!("{g}: {}", self.doc.group_name(g));
                 if ui
                     .selectable_label(current, label)
                     .on_hover_text(tr("Mettre le calque courant dans ce groupe"))
@@ -3158,7 +3318,128 @@ impl AnimApp {
                     self.needs_full = true;
                     ui.close_menu();
                 }
+                ui.separator();
+                if ui.button(tr("Modifier les groupes…")).clicked() {
+                    self.group_edit = Some(self.doc.groups.clone());
+                    ui.close_menu();
+                }
             });
+        }
+    }
+
+    /// The colour group editor: colours and names of groups 1-12, with the usual four actions
+    /// (back to the defaults, make these the defaults, save to a file, load from a file).
+    /// Protected groups keep their colour and name. Nothing changes until "Apply".
+    fn group_editor(&mut self, ctx: &egui::Context) {
+        let Some(mut draft) = self.group_edit.take() else { return };
+        let mut open = true;
+        let mut apply = false;
+        let mut close = false;
+        let keep = self.group_protect;
+        // a whole table replaces the groups that aren't protected
+        let put = |draft: &mut Vec<crate::doc::Group>, table: Vec<crate::doc::Group>| {
+            for g in 1..13 {
+                if !keep[g] {
+                    draft[g] = table[g].clone();
+                }
+            }
+        };
+        egui::Window::new(tr("Modifier les groupes de couleur"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("group-edit").num_columns(4).spacing([8.0, 4.0]).show(ui, |ui| {
+                    for (g, group) in draft.iter_mut().enumerate().skip(1) {
+                        ui.label(format!("{g}"));
+                        ui.add_enabled_ui(!keep[g], |ui| {
+                            ui.color_edit_button_srgb(&mut group.color);
+                        });
+                        ui.add_enabled_ui(!keep[g], |ui| {
+                            ui.add_sized(
+                                [190.0, 20.0],
+                                egui::TextEdit::singleline(&mut group.name).hint_text(tr(crate::doc::GROUP_NAMES[g])),
+                            );
+                        });
+                        if keep[g] {
+                            ui.label("🔒").on_hover_text(tr("Groupe protégé : il garde sa couleur et son nom"));
+                        } else {
+                            ui.label("");
+                        }
+                        ui.end_row();
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui
+                        .button(tr("Valeurs par défaut"))
+                        .on_hover_text(tr(
+                            "Reprend vos groupes par défaut (ou ceux d'origine si vous n'en avez pas défini)",
+                        ))
+                        .clicked()
+                    {
+                        put(&mut draft, crate::doc::default_groups());
+                    }
+                    if ui.button(tr("Groupes d'origine")).clicked() {
+                        put(&mut draft, crate::doc::builtin_groups());
+                    }
+                    if ui
+                        .button(tr("Définir comme défaut"))
+                        .on_hover_text(tr("Les nouveaux projets commenceront avec ces groupes"))
+                        .clicked()
+                    {
+                        let table = crate::doc::clean_groups(draft.clone());
+                        let same = table == crate::doc::builtin_groups();
+                        if same {
+                            crate::prefs::clear_default_groups();
+                        }
+                        match if same { Ok(()) } else { crate::prefs::save_default_groups(&table) } {
+                            Ok(()) => self.status = tr("Groupes par défaut enregistrés.").into(),
+                            Err(e) => self.status = trf("Échec de l'enregistrement : {}", &[&e]),
+                        }
+                    }
+                });
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Enregistrer dans un fichier…")).clicked() {
+                        if let Some(p) = rfd::FileDialog::new()
+                            .add_filter(tr("Groupes de couleur"), &["txt"])
+                            .set_file_name("groups.txt")
+                            .save_file()
+                        {
+                            let text = crate::doc::groups_to_text(&crate::doc::clean_groups(draft.clone()));
+                            if let Err(e) = std::fs::write(&p, text) {
+                                self.status = trf("Échec de l'enregistrement : {}", &[&e]);
+                            }
+                        }
+                    }
+                    if ui.button(tr("Charger un fichier…")).clicked() {
+                        if let Some(p) = rfd::FileDialog::new().add_filter(tr("Groupes de couleur"), &["txt"]).pick_file() {
+                            match std::fs::read_to_string(&p)
+                                .map_err(|e| e.to_string())
+                                .and_then(|t| crate::doc::groups_from_text(&t))
+                            {
+                                Ok(table) => put(&mut draft, table),
+                                Err(e) => self.status = trf("Échec de l'ouverture : {}", &[&e]),
+                            }
+                        }
+                    }
+                });
+                ui.separator();
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Appliquer")).clicked() {
+                        apply = true;
+                    }
+                    if ui.button(tr("Fermer")).clicked() {
+                        close = true;
+                    }
+                });
+            });
+        if apply {
+            let n = self.doc.set_groups(&draft, &keep);
+            self.status = trf("{} groupes modifiés.", &[&n]);
+            self.needs_full = true;
+        } else if open && !close {
+            self.group_edit = Some(draft);
         }
     }
 
@@ -3683,9 +3964,10 @@ impl AnimApp {
                     .on_hover_text(tr("Mode de mélange du calque"));
                 ui.menu_button(tr("Couleur"), |ui| {
                     ui.horizontal(|ui| {
-                        for (gi, g) in crate::doc::GROUPS.into_iter().enumerate() {
+                        for gi in 0..self.doc.groups.len().min(13) {
+                            let g = self.doc.groups[gi].color;
                             let (r, resp) = ui.allocate_exact_size(vec2(20.0, 20.0), Sense::click());
-                            let resp = resp.on_hover_text(format!("{gi}: {}", tr(crate::doc::GROUP_NAMES[gi])));
+                            let resp = resp.on_hover_text(format!("{gi}: {}", self.doc.group_name(gi)));
                             ui.painter().rect_filled(r, 3.0, c32(g));
                             if self.doc.layers[cl].group == g {
                                 ui.painter()
@@ -4019,18 +4301,15 @@ impl AnimApp {
             let p = painter.with_clip_rect(col_clip);
             let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(COL, ROW - 1.0));
             p.rect_filled(rowrect, 0.0, th.panel);
-            p.rect_filled(
-                egui::Rect::from_min_size(rowrect.min, vec2(3.0, rowrect.height())),
-                0.0,
-                Color32::from_rgb(90, 160, 220),
-            );
+            let track_col = sound_color(track.color, &self.doc.groups);
+            p.rect_filled(egui::Rect::from_min_size(rowrect.min, vec2(3.0, rowrect.height())), 0.0, track_col);
             let name = track.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let muted = track.mute;
             let missing = self.audio.get(k).is_none_or(|c| c.is_none());
             p.text(
                 pos2(area.left() + 10.0, y + ROW / 2.0),
                 egui::Align2::LEFT_CENTER,
-                format!("♪ {name}"),
+                format!("{} {name}", if track.locked { "🔒" } else { "♪" }),
                 font.clone(),
                 if missing {
                     Color32::from_rgb(255, 190, 80)
@@ -4048,11 +4327,7 @@ impl AnimApp {
             );
             let first = (sx / cell).floor() as usize;
             let last = (((sx + cells_w) / cell).ceil() as usize + 1).min(nf);
-            let wave = if muted {
-                Color32::from_gray(110)
-            } else {
-                Color32::from_rgb(90, 160, 220)
-            };
+            let wave = if muted { Color32::from_gray(110) } else { track_col };
             for f in first..last {
                 let v = self.peaks.get(k).and_then(|p| p.get(f)).copied().unwrap_or(0.0);
                 if v <= 0.0 {
@@ -6884,6 +7159,7 @@ impl eframe::App for AnimApp {
         self.floating_panels(ctx);
         self.stretch_window(ctx);
         self.note_window(ctx);
+        self.group_editor(ctx);
         self.recovery_tick();
         self.bridge_tick();
         self.prefs_window(ctx);
@@ -6903,6 +7179,14 @@ impl eframe::App for AnimApp {
         self.shortcuts_window(ctx);
         self.watch_file(ctx);
         self.screenshot(ctx);
+    }
+}
+
+/// A sound track's colour in the timeline: 0 = the usual blue, 1-12 = that colour group's colour.
+fn sound_color(c: u8, groups: &[crate::doc::Group]) -> Color32 {
+    match groups.get(c as usize) {
+        Some(g) if c > 0 => c32(g.color),
+        _ => Color32::from_rgb(90, 160, 220),
     }
 }
 

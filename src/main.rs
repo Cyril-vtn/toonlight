@@ -47,6 +47,11 @@ fn main() -> eframe::Result<()> {
             i += 1;
             continue;
         }
+        if args[i] == "--groups" {
+            app::OPEN_GROUPS.store(true, std::sync::atomic::Ordering::Relaxed);
+            i += 1;
+            continue;
+        }
         if args[i] == "--lang" && i + 1 < args.len() {
             if let Some(l) = i18n::Lang::from_code(&args[i + 1]) {
                 i18n::set_override(l);

@@ -7,14 +7,14 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **55** done, **23** partial, **72** missing.
+Today: **58** done, **21** partial, **71** missing.
 
 ## Next (P1)
 
 1. Drawing: try the macOS pen pressure and tilt with real tablets; pen tilt on Windows and Linux.
-2. Layers: join the chosen layers, time ratio / retime; layer marks, collapse.
-3. Sound: tracks for the whole project, lock and colour.
-4. Colour group editor; effect stack presets; undo marks.
+2. Layers: time ratio / retime; layer marks, collapse.
+3. Sound: tracks for the whole project.
+4. Undo marks; camera motion blur and speed profile; storyboard PDF styles.
 
 ---
 
@@ -74,8 +74,8 @@ Today: **55** done, **23** partial, **72** missing.
 | Add, duplicate, delete, move, rename, visibility, lock, opacity | ✅ | — |
 | Blending modes | 🟡 | P2 |
 | Colour groups (13, panel, protect, show / hide / lock a group, timeline filter) | ✅ | — |
-| Colour group editor (rename, reset, save / load) | ❌ | P3 |
-| Merge below / merge visible / merge selected (done) / join selected | 🟡 | P2 |
+| Colour group editor (rename, recolour, reset, defaults, save / load) | ✅ | — |
+| Merge below / merge visible / merge selected / join selected | ✅ | — |
 | Selecting several layers (Ctrl / Shift + click, by colour group) and acting on them together | ✅ | — |
 | Cut / copy / paste layers (with their frames) | ✅ | — |
 | Position lock | ❌ | P3 |
@@ -148,13 +148,13 @@ Today: **55** done, **23** partial, **72** missing.
 ## 8. Effects (FX)
 
 Each layer has an **effect stack** (several effects in a row, shown live, animated with keys);
-9 effects so far. Saving / loading stacks as presets is still to do.
+9 effects so far. A stack can be saved as a preset or a file and put on another layer.
 
 | Effect | Status | Priority |
 |---|---|---|
 | Gaussian blur | ✅ | — |
 | Mosaic, noise, wave, negative, brightness / contrast, hue / saturation, colour key, luma key | ✅ | — |
-| FX stack (chain, save, load, presets, preview) and keyframed FX | 🟡 | P2 |
+| FX stack (chain, save, load, presets, preview) and keyframed FX | ✅ | — |
 | Curves, colour adjust, histogram, posterize, black-and-white converter, colour replacer, colour eraser, colour range | ❌ | P2 |
 | Advanced keyer (matte, blur matte, gain / offset) | ❌ | P2 |
 | Blurs: cubic, median, radial, directional, centre, chroma, motion | ❌ | P2 |
@@ -199,7 +199,7 @@ Each layer has an **effect stack** (several effects in a row, shown live, animat
 | Feature | Status | Priority |
 |---|---|---|
 | Sound per shot: waveform, volume, offset, fades, mute, export with MP4 | ✅ | — |
-| Several sound tracks per shot (done); tracks for the whole project, lock, colour | 🟡 | P2 |
+| Several sound tracks per shot, lock, colour (done); tracks for the whole project | 🟡 | P2 |
 | Sound scrubbing (hear while moving the playhead) | ✅ | — |
 | Metronome, beeps | ❌ | P3 |
 | Sound across shots in the film export | ✅ | — |
