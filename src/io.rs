@@ -57,6 +57,9 @@ struct Header {
     mark_out: Option<usize>,
     #[serde(default)]
     notes: std::collections::BTreeMap<usize, String>,
+    /// The project's colour groups; files written before they could be edited have the built-in ones.
+    #[serde(default = "crate::doc::builtin_groups")]
+    groups: Vec<crate::doc::Group>,
 }
 
 pub fn png_bytes(px: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
@@ -150,6 +153,7 @@ fn write_doc(doc: &Doc, f: &mut impl Write) -> Result<(), String> {
         mark_in: doc.mark_in,
         mark_out: doc.mark_out,
         notes: doc.notes.clone(),
+        groups: doc.groups.clone(),
     };
     let json = serde_json::to_vec(&header).map_err(|e| e.to_string())?;
     let mut write = |b: &[u8]| f.write_all(b).map_err(|e| e.to_string());
@@ -287,6 +291,7 @@ fn read_doc(f: &mut impl Read) -> Result<Doc, String> {
     doc.mark_in = h.mark_in;
     doc.mark_out = h.mark_out;
     doc.notes = h.notes;
+    doc.groups = crate::doc::clean_groups(h.groups);
     if doc.layers.is_empty() {
         return Err(crate::i18n::tr("Le projet n'a aucun calque.").into());
     }

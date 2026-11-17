@@ -118,6 +118,39 @@ pub fn recovery_path() -> Option<PathBuf> {
     crate::i18n::config_dir().map(|d| d.join("recovery").join("recovery.toonlight"))
 }
 
+/// Where the person's own default colour groups are kept (13 lines "red green blue name").
+fn groups_path() -> Option<PathBuf> {
+    crate::i18n::config_dir().map(|d| d.join("color-groups.txt"))
+}
+
+/// Read the person's default colour groups, if they set some, so that new projects start with
+/// them.
+pub fn load_default_groups() {
+    let own = groups_path()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .and_then(|t| crate::doc::groups_from_text(&t).ok());
+    crate::doc::set_default_groups(own);
+}
+
+/// Make these groups the defaults for new projects ("make the current groups the defaults").
+pub fn save_default_groups(groups: &[crate::doc::Group]) -> Result<(), String> {
+    let p = groups_path().ok_or("no settings folder")?;
+    if let Some(d) = p.parent() {
+        std::fs::create_dir_all(d).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(&p, crate::doc::groups_to_text(groups)).map_err(|e| e.to_string())?;
+    crate::doc::set_default_groups(Some(groups.to_vec()));
+    Ok(())
+}
+
+/// Forget the person's default colour groups: new projects get the built-in ones again.
+pub fn clear_default_groups() {
+    if let Some(p) = groups_path() {
+        let _ = std::fs::remove_file(p);
+    }
+    crate::doc::set_default_groups(None);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

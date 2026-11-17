@@ -35,9 +35,10 @@ Installers for every stable version are on the
   on macOS also the pen's tilt, direction and rotation, and its eraser end.
 - **Custom brushes** from a selection or a picture, and **tool presets**.
 - **Selections**: rectangle, lasso, magic wand; copy, cut, paste; move, scale, rotate, mirror.
-- **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups,
-  before / after behaviours (none, repeat, ping-pong, hold); merge, stretch, shift, slide and
-  split in time; several layers chosen at once (Ctrl / Shift + click).
+- **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups
+  you can rename and recolour, before / after behaviours (none, repeat, ping-pong, hold); merge,
+  stretch, shift, slide, split and join in time; several layers chosen at once (Ctrl / Shift +
+  click).
 - **Timeline**: cells and holds, several cells at once (move, copy, paste), exposures by a
   number, set exposure, drawing names, coloured image marks (keys, breakdowns, in-betweens),
   in-between drawings inserted between two drawings, notes, bookmarks, mark in / out, zoom,
@@ -46,7 +47,8 @@ Installers for every stable version are on the
 - **Animated camera**, **shots and storyboard**, **sound**: several tracks per shot with
   waveforms, volume, offset, fades and scrubbing, mixed into the MP4 and film exports.
 - **Effects** with live preview: blur, mosaic, noise, wave, brightness / contrast,
-  hue / saturation, invert, colour key, luma key.
+  hue / saturation, invert, colour key, luma key; a stack of effects per layer, animated with
+  keys, that you can save as a preset or a file.
 - **Export**: PNG sequence, animated GIF, MP4 with sound (with [FFmpeg](https://ffmpeg.org) 4.4 or
   later installed), the whole film (every shot, with its sounds), layer structure for After Effects.
 - **Workspace**: panels you drag between columns or float, pinned or sliding columns, four rooms
@@ -73,7 +75,7 @@ On Linux, install the system libraries first (Debian / Ubuntu):
 sudo apt install libgtk-3-dev libxkbcommon-dev libasound2-dev libxcb-render0-dev libxcb-shape0-dev libxcb-xfixes0-dev
 ```
 
-Start options: `--lang en` (fr, en, es, de, zh, ja), `--shortcuts`, `--storyboard`,
+Start options: `--lang en` (fr, en, es, de, zh, ja), `--shortcuts`, `--storyboard`, `--groups`,
 `--screenshot shot.png` (draws about 120 frames, saves a picture and quits), `--mcp` (AI server,
 no window), or a project file to open.
 
