@@ -6,6 +6,21 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Timeline zoom**: − / + and a slider at the right of the timeline, Ctrl + wheel (or a pinch)
+  over it, and "Fit" (the whole shot, the selected cells, the sound, normal size). The zoom is
+  kept per room. The ruler shows frame numbers or timecode (seconds:frames). The timeline no
+  longer jumps back to the current frame when you scroll away from it.
+- **Image marks**: mark a drawing with one of 12 colours (Image menu, or right-click in the
+  timeline) to tell keys, breakdowns and in-betweens apart; jump to the next / previous marked
+  image. Marks follow the drawing when cells or layers are copied and are kept by merges.
+- **Timeline notes**: a notes row under the ruler; double-click it (or right-click > Note here…)
+  to write a note at a frame. Saved in the project.
+- **Insert in-betweens** (Image menu): adds drawings between the current drawing and the layer's
+  next one, each a cross-fade of the two to draw over (or blank).
+- AI (MCP): `timing` takes `mark_image`, `note` and `insert_tweens`; `go_to` jumps to the next /
+  previous marked image; `project_info` lists the marks and the notes; `layer_merge` takes
+  `keep_image_marks`.
+- Fix: applying a layer's effect stack to its drawings no longer loses the drawings' names.
 - CI: clippy now passes with no warnings on Rust 1.100 and is blocking (`-D warnings`); workflow
   actions updated (checkout v7, upload-artifact v7, download-artifact v8, action-gh-release v3);
   rfd updated to 0.18. Dependabot groups action and patch updates and leaves eframe / egui /

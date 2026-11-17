@@ -282,6 +282,7 @@ impl Server {
                     "light_table": l.onion,
                     "drawings_start_at_frames": self.doc.keys(i).iter().map(|k| k.0).collect::<Vec<_>>(),
                     "drawing_names": l.names.iter().filter_map(|(id, n)| l.cels.iter().position(|c| *c == Some(*id)).map(|f| (f.to_string(), json!(n)))).collect::<serde_json::Map<_, _>>(),
+                    "image_marks": self.doc.keys(i).iter().filter_map(|(f, id)| l.marks.get(id).map(|m| (f.to_string(), json!(m)))).collect::<serde_json::Map<_, _>>(),
                     "end": l.end,
                     "before": l.pre.name(),
                     "after": l.post.name(),
@@ -299,6 +300,7 @@ impl Server {
             "bookmarks": self.doc.bookmarks,
             "mark_in": self.doc.mark_in,
             "mark_out": self.doc.mark_out,
+            "notes": self.doc.notes.iter().map(|(f, t)| (f.to_string(), json!(t))).collect::<serde_json::Map<_, _>>(),
             "layers_bottom_to_top": layers,
             "paper": hex(self.doc.paper),
             "sound": self.doc.sound.as_ref().map(|t| json!({"file": t.path.display().to_string(), "volume": (t.volume * 100.0).round(), "offset_frames": (t.offset * self.doc.fps).round(), "mute": t.mute})),
@@ -434,6 +436,15 @@ impl Server {
                     };
                     self.doc.frame = to.ok_or("no drawing change that way on this layer")?.min(self.doc.frames - 1);
                 }
+                if let Some(d) = a.get("mark").and_then(Value::as_str) {
+                    let l = self.doc.current_layer;
+                    let to = match d {
+                        "next" => self.doc.next_mark(l, f),
+                        "previous" | "prev" => self.doc.prev_mark(l, f),
+                        other => return Err(format!("mark {other}: use next or previous")),
+                    };
+                    self.doc.frame = to.ok_or("no marked image that way on this layer")?;
+                }
                 if let Some(d) = a.get("bookmark").and_then(Value::as_str) {
                     let to = match d {
                         "next" => self.doc.next_bookmark(f),
@@ -519,6 +530,7 @@ impl Server {
                 let opts = crate::doc::MergeOptions {
                     keep_color_group: a.get("keep_color_group").and_then(Value::as_bool).unwrap_or(true),
                     keep_instance_names: a.get("keep_instance_names").and_then(Value::as_bool).unwrap_or(true),
+                    keep_image_marks: a.get("keep_image_marks").and_then(Value::as_bool).unwrap_or(true),
                 };
                 let ok = match a.get("what").and_then(Value::as_str).unwrap_or("down") {
                     "down" => self.doc.merge_down(opts),
@@ -637,6 +649,26 @@ impl Server {
                         self.doc.toggle_bookmark(from);
                         Ok(text(format!("Bookmarks: {:?}", self.doc.bookmarks)))
                     }
+                    "mark_image" => {
+                        let m = a.get("mark").and_then(Value::as_u64).ok_or("mark is missing (1-12, 0 removes it)")?.min(12) as u8;
+                        for f in from..=to {
+                            if !self.doc.set_mark(l, f, m) {
+                                return Err("no drawing there, or the layer is locked".into());
+                            }
+                        }
+                        Ok(text(if m == 0 { "Mark removed.".to_string() } else { format!("Marked with colour {m}.") }))
+                    }
+                    "note" => {
+                        let t = a.get("text").and_then(Value::as_str).unwrap_or("");
+                        self.doc.set_note(from, t);
+                        Ok(text(format!("{} notes on the timeline.", self.doc.notes.len())))
+                    }
+                    "insert_tweens" => {
+                        let n = a.get("frames").and_then(Value::as_u64).unwrap_or(1).clamp(1, 99) as usize;
+                        let mix = a.get("mix").and_then(Value::as_bool).unwrap_or(true);
+                        let at = self.doc.insert_tweens(l, from, n, mix).ok_or("no drawing after this one on the layer, or the layer is locked")?;
+                        Ok(text(format!("{n} in-between drawings inserted at frames {at}..{}; {} frames now.", at + n - 1, self.doc.frames)))
+                    }
                     "mark_in" => {
                         self.doc.mark_in = if a.get("clear").and_then(Value::as_bool).unwrap_or(false) { None } else { Some(from) };
                         Ok(text(format!("Play range {:?}.", self.doc.play_range())))
@@ -645,7 +677,7 @@ impl Server {
                         self.doc.mark_out = if a.get("clear").and_then(Value::as_bool).unwrap_or(false) { None } else { Some(from) };
                         Ok(text(format!("Play range {:?}.", self.doc.play_range())))
                     }
-                    other => Err(format!("action {other}: use set_exposure, add_exposures, remove_exposures, move_cells, delete_cells, repeat, stretch, set_number, name_drawing, bookmark, mark_in or mark_out")),
+                    other => Err(format!("action {other}: use set_exposure, add_exposures, remove_exposures, move_cells, delete_cells, repeat, stretch, set_number, name_drawing, bookmark, mark_in, mark_out, mark_image, note or insert_tweens")),
                 }
             }
             "frame_remove" => {
@@ -1728,8 +1760,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {
             "fps": {"type": "number"}, "frames": {"type": "integer"}, "paper": color, "paper_texture": {"type": "string", "enum": papers},
             "light_table": {"type": "object", "properties": {"active": {"type": "boolean"}, "before": {"type": "integer"}, "after": {"type": "integer"}, "opacity": {"type": "number"}}}}}},
-        {"name": "go_to", "title": "Go to", "description": "Make a layer and/or frame current; drawing next / previous jumps to the next drawing change of the layer, bookmark next / previous to a bookmark.",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "drawing": {"type": "string", "enum": ["next", "previous"]}, "bookmark": {"type": "string", "enum": ["next", "previous"]}}}},
+        {"name": "go_to", "title": "Go to", "description": "Make a layer and/or frame current; drawing next / previous jumps to the next drawing change of the layer, mark next / previous to the layer's next marked image, bookmark next / previous to a bookmark.",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "drawing": {"type": "string", "enum": ["next", "previous"]}, "mark": {"type": "string", "enum": ["next", "previous"]}, "bookmark": {"type": "string", "enum": ["next", "previous"]}}}},
         {"name": "layer_copy", "title": "Copy layer", "description": "duplicate (a copy above, default), copy / cut (keep the layer with its drawings to paste, also into another shot) or paste (above the current layer).",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["duplicate", "copy", "cut", "paste"]}}}},
         {"name": "import_psd", "title": "Import a PSD", "description": "Each layer of a Photoshop file (8-bit RGB) becomes a layer, with its name, opacity, visibility and blending, drawn at the frame.",
@@ -1753,14 +1785,14 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "lock", "unlock", "show", "hide"]}, "group": {"type": "integer"}}}},
         {"name": "layer_delete", "title": "Delete layer", "description": "Delete a layer.",
          "inputSchema": {"type": "object", "properties": {"layer": layer}}, "annotations": {"destructiveHint": true}},
-        {"name": "layer_merge", "title": "Merge layers", "description": "Merge a layer down onto the layer under it (what = down, default), or every visible layer into the lowest visible one (what = visible). The upper layer's opacity and blending are painted in; holds and before / after behaviours are followed. keep_color_group and keep_instance_names (default true) keep the lower layer's colour group and drawing names.",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "what": {"type": "string", "enum": ["down", "visible"]}, "keep_color_group": {"type": "boolean"}, "keep_instance_names": {"type": "boolean"}}}},
+        {"name": "layer_merge", "title": "Merge layers", "description": "Merge a layer down onto the layer under it (what = down, default), or every visible layer into the lowest visible one (what = visible). The upper layer's opacity and blending are painted in; holds and before / after behaviours are followed. keep_color_group, keep_instance_names and keep_image_marks (default true) keep the colour group, the drawing names and the image marks.",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "what": {"type": "string", "enum": ["down", "visible"]}, "keep_color_group": {"type": "boolean"}, "keep_instance_names": {"type": "boolean"}, "keep_image_marks": {"type": "boolean"}}}},
         {"name": "layer_move", "title": "Move layer", "description": "Move a layer up or down in the stack.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "direction": {"type": "string", "enum": ["up", "down"]}}, "required": ["direction"]}},
         {"name": "frame_add", "title": "Add frame", "description": "After the given frame on a layer: a new blank drawing, a duplicate of the drawing, or hold the drawing one more frame. Moves to the new frame.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "kind": {"type": "string", "enum": ["blank", "duplicate", "hold"]}}}},
-        {"name": "timing", "title": "Timing", "description": "Timing of a layer's cells from frame `from` to `to` (default: the current frame): set_exposure (every drawing lasts `frames` frames), add_exposures / remove_exposures (hold the drawing at `from` `frames` more or less), move_cells (`by` frames, + = later), delete_cells, repeat (`frames` times, mode loop / pingpong / random), stretch (the layer to `frames` frames), set_number (exposure sheet: frames from..to show drawing `number`), name_drawing (`name`), bookmark (toggle at `from`), mark_in / mark_out (play range start / end at `from`; `clear` removes it).",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["set_exposure", "add_exposures", "remove_exposures", "move_cells", "delete_cells", "repeat", "stretch", "set_number", "name_drawing", "bookmark", "mark_in", "mark_out"]}, "number": {"description": "For set_number: the drawing number shown (as typed in the exposure sheet; a new number makes a new drawing; empty or \"-\" = none)", "oneOf": [{"type": "integer"}, {"type": "string"}]}, "mode": {"type": "string", "enum": ["loop", "pingpong", "random"]},
+        {"name": "timing", "title": "Timing", "description": "Timing of a layer's cells from frame `from` to `to` (default: the current frame): set_exposure (every drawing lasts `frames` frames), add_exposures / remove_exposures (hold the drawing at `from` `frames` more or less), move_cells (`by` frames, + = later), delete_cells, repeat (`frames` times, mode loop / pingpong / random), stretch (the layer to `frames` frames), set_number (exposure sheet: frames from..to show drawing `number`), name_drawing (`name`), bookmark (toggle at `from`), mark_in / mark_out (play range start / end at `from`; `clear` removes it), mark_image (give the drawings shown at from..to the colour `mark` 1-12, as keys / breakdowns / in-betweens; 0 removes it), note (write `text` on the timeline at `from`; empty removes it), insert_tweens (`frames` in-between drawings after the drawing at `from`, before the layer's next drawing; each is a cross-fade of the two unless mix is false).",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["set_exposure", "add_exposures", "remove_exposures", "move_cells", "delete_cells", "repeat", "stretch", "set_number", "name_drawing", "bookmark", "mark_in", "mark_out", "mark_image", "note", "insert_tweens"]}, "mark": {"type": "integer", "description": "For mark_image: colour 1-12 (1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white), 0 = no mark"}, "text": {"type": "string"}, "mix": {"type": "boolean"}, "number": {"description": "For set_number: the drawing number shown (as typed in the exposure sheet; a new number makes a new drawing; empty or \"-\" = none)", "oneOf": [{"type": "integer"}, {"type": "string"}]}, "mode": {"type": "string", "enum": ["loop", "pingpong", "random"]},
             "from": frame, "to": frame, "frames": {"type": "integer"}, "by": {"type": "integer"}, "name": {"type": "string"}, "clear": {"type": "boolean"}}, "required": ["action"]}},
         {"name": "frame_remove", "title": "Remove frame", "description": "Remove a layer's cell at a frame (later cells move left), or hold its drawing one frame less.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "kind": {"type": "string", "enum": ["cell", "hold"]}}}, "annotations": {"destructiveHint": true}},
@@ -1992,6 +2024,22 @@ mod tests {
         assert_eq!(s.doc.layers[0].cels[2], s.doc.layers[0].cels[0]);
         ok(&mut s, "go_to", json!({"layer": 0, "frame": 0, "drawing": "next"}));
         assert_eq!(s.doc.frame, 2);
+        // image marks, timeline notes and in-betweens
+        ok(&mut s, "timing", json!({"action": "mark_image", "layer": 0, "from": 2, "mark": 4}));
+        assert_eq!(s.doc.mark_at(0, 3), Some(4), "the same drawing shown again has the mark too");
+        ok(&mut s, "go_to", json!({"layer": 0, "frame": 0, "mark": "next"}));
+        assert_eq!(s.doc.frame, 2);
+        ok(&mut s, "timing", json!({"action": "note", "from": 1, "text": "anticipation"}));
+        assert!(ok(&mut s, "project_info", json!({})).contains("anticipation"));
+        let frames = s.doc.frames;
+        ok(
+            &mut s,
+            "timing",
+            json!({"action": "insert_tweens", "layer": 0, "from": 0, "frames": 2}),
+        );
+        assert_eq!(s.doc.frames, frames + 2);
+        ok(&mut s, "undo", json!({}));
+        assert_eq!(s.doc.frames, frames);
         ok(&mut s, "camera", json!({"lock_x": true, "keys": [{"frame": 0, "x": 5, "y": 6}]}));
         assert!(s.doc.camera.lock_x && (s.doc.camera.keys[0].x - 32.0).abs() < 0.01);
         ok(&mut s, "palette", json!({"action": "set", "colors": ["#102030", [1, 2, 3]]}));

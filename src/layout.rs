@@ -88,10 +88,20 @@ pub struct Room {
     pub timeline: bool,
     pub timeline_pinned: bool,
     pub timeline_height: f32,
+    /// The timeline's zoom in this room: the width of a frame, in points.
+    #[serde(default = "default_timeline_cell")]
+    pub timeline_cell: f32,
     /// This room's keyboard shortcuts (`.cfg` text); the reference keeps one "Keyboard-" section
     /// per room and swaps it when the room changes. None = the shortcuts in use.
     #[serde(default)]
     pub keys: Option<String>,
+}
+
+/// Width of a frame in the timeline before any zoom.
+pub const TIMELINE_CELL: f32 = 24.0;
+
+fn default_timeline_cell() -> f32 {
+    TIMELINE_CELL
 }
 
 /// Width of the reference's columns (`*-winw=185`).
@@ -120,6 +130,7 @@ impl Room {
             timeline: true,
             timeline_pinned: true,
             timeline_height: TIMELINE_HEIGHT,
+            timeline_cell: TIMELINE_CELL,
             keys: None,
         };
         match n {

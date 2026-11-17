@@ -37,7 +37,9 @@ Installers for every stable version are on the
 - **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups,
   before / after behaviours (none, repeat, ping-pong, hold).
 - **Timeline**: cells and holds, several cells at once (move, copy, paste), exposures by a
-  number, set exposure, drawing names, bookmarks, mark in / out, exposure sheet.
+  number, set exposure, drawing names, coloured image marks (keys, breakdowns, in-betweens),
+  in-between drawings inserted between two drawings, notes, bookmarks, mark in / out, zoom,
+  frame numbers or timecode, exposure sheet.
 - **Light table** (onion skin), **flipping**, **view rotation and mirror**.
 - **Animated camera**, **shots and storyboard**, **sound** with waveform and scrubbing.
 - **Effects** with live preview: blur, mosaic, noise, wave, brightness / contrast,

@@ -51,6 +51,8 @@ struct Header {
     mark_in: Option<usize>,
     #[serde(default)]
     mark_out: Option<usize>,
+    #[serde(default)]
+    notes: std::collections::BTreeMap<usize, String>,
 }
 
 pub fn png_bytes(px: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
@@ -118,6 +120,11 @@ fn write_doc(doc: &Doc, f: &mut impl Write) -> Result<(), String> {
                 .iter()
                 .filter_map(|(id, n)| used.binary_search(id).ok().map(|i| (i, n.clone())))
                 .collect();
+            l.marks = l
+                .marks
+                .iter()
+                .filter_map(|(id, m)| used.binary_search(id).ok().map(|i| (i, *m)))
+                .collect();
             l
         })
         .collect();
@@ -137,6 +144,7 @@ fn write_doc(doc: &Doc, f: &mut impl Write) -> Result<(), String> {
         bookmarks: doc.bookmarks.clone(),
         mark_in: doc.mark_in,
         mark_out: doc.mark_out,
+        notes: doc.notes.clone(),
     };
     let json = serde_json::to_vec(&header).map_err(|e| e.to_string())?;
     let mut write = |b: &[u8]| f.write_all(b).map_err(|e| e.to_string());
@@ -269,6 +277,7 @@ fn read_doc(f: &mut impl Read) -> Result<Doc, String> {
     doc.bookmarks = h.bookmarks;
     doc.mark_in = h.mark_in;
     doc.mark_out = h.mark_out;
+    doc.notes = h.notes;
     if doc.layers.is_empty() {
         return Err(crate::i18n::tr("Le projet n'a aucun calque.").into());
     }

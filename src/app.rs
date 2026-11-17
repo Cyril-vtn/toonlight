@@ -19,6 +19,19 @@ enum LayoutOp {
     Hide(PanelId),
 }
 
+/// Width of a frame in the timeline, in points: default, and the zoom limits.
+const TL_CELL: f32 = crate::layout::TIMELINE_CELL;
+const TL_CELL_MIN: f32 = 2.0;
+const TL_CELL_MAX: f32 = 64.0;
+
+/// What "Fit" shows across the timeline's width.
+#[derive(Clone, Copy)]
+enum TlFit {
+    Clip,
+    Selection,
+    Sound,
+}
+
 /// Open the shortcuts window at start (`--shortcuts`, for checks).
 pub static OPEN_SHORTCUTS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -230,9 +243,25 @@ pub struct AnimApp {
     /// Cells selected in the timeline: (layer, first frame, last frame).
     cell_sel: Option<(usize, usize, usize)>,
     cell_anchor: usize,
-    /// Cells copied from the timeline, with their instance names.
+    /// Cells copied from the timeline, with their instance names and image marks.
     cell_clip: Vec<Option<usize>>,
     cell_clip_names: std::collections::BTreeMap<usize, String>,
+    cell_clip_marks: std::collections::BTreeMap<usize, u8>,
+    /// Timeline zoom: the width of a frame, the width last drawn (to keep the frame under the
+    /// pointer in place when it changes), a fit asked for, and the frame last scrolled to.
+    tl_cell: f32,
+    tl_cell_shown: f32,
+    tl_fit: Option<TlFit>,
+    tl_frame_seen: usize,
+    /// The timeline's ruler shows seconds:frames instead of frame numbers.
+    tl_timecode: bool,
+    /// The notes row of the timeline, and the note being written: (frame, text).
+    tl_notes: bool,
+    note_edit: Option<(usize, String)>,
+    /// The colour (1-12) "Mark the image" gives, and how "Insert in-betweens" works.
+    mark_pick: u8,
+    tween_n: usize,
+    tween_mix: bool,
     /// How many exposures "Exposure +/−" add or remove, and the value "Set exposure" gives.
     expo_n: usize,
     /// Audio scrubbing: 0 never, 1 while dragging in the timeline, 2 always (reference "ScrubMode",
@@ -382,6 +411,17 @@ impl AnimApp {
             cell_anchor: 0,
             cell_clip: vec![],
             cell_clip_names: Default::default(),
+            cell_clip_marks: Default::default(),
+            tl_cell: TL_CELL,
+            tl_cell_shown: TL_CELL,
+            tl_fit: None,
+            tl_frame_seen: usize::MAX,
+            tl_timecode: false,
+            tl_notes: true,
+            note_edit: None,
+            mark_pick: 1,
+            tween_n: 1,
+            tween_mix: true,
             expo_n: 1,
             scrub_mode: 1,
             scrub_secs: 0.1,
@@ -422,6 +462,8 @@ impl AnimApp {
             let ctx = cc.egui_ctx.clone();
             app.bridge = crate::mcp::start_bridge(move || ctx.request_repaint());
         }
+        app.tl_cell = app.rooms[app.room].timeline_cell.clamp(TL_CELL_MIN, TL_CELL_MAX);
+        app.tl_cell_shown = app.tl_cell;
         app.scrub_mode = prefs.scrub_mode;
         app.scrub_secs = prefs.scrub_secs;
         app.prefs = prefs;
@@ -560,6 +602,7 @@ impl AnimApp {
                     self.cell_clip[0] = self.doc.drawing_at(l, a);
                 }
                 self.cell_clip_names = self.doc.layers[l].names.clone();
+                self.cell_clip_marks = self.doc.layers[l].marks.clone();
                 self.status = trf("{} cellules copiées.", &[&self.cell_clip.len()]);
                 ui.close_menu();
             }
@@ -569,7 +612,8 @@ impl AnimApp {
             {
                 let clip = self.cell_clip.clone();
                 let names = self.cell_clip_names.clone();
-                self.doc.paste_cells(&clip, &names);
+                let marks = self.cell_clip_marks.clone();
+                self.doc.paste_cells(&clip, &names, &marks);
                 self.cell_sel = None;
                 self.needs_full = true;
                 ui.close_menu();
@@ -608,6 +652,22 @@ impl AnimApp {
                 self.doc.mark_in = None;
                 self.doc.mark_out = None;
             }
+            ui.separator();
+            if ui.button(tr("Note ici…")).clicked() {
+                self.edit_note(f);
+                ui.close_menu();
+            }
+            if ui.button(tr("Note précédente")).clicked() {
+                if let Some(n) = self.doc.prev_note(f) {
+                    self.doc.frame = n;
+                }
+            }
+            if ui.button(tr("Note suivante")).clicked() {
+                if let Some(n) = self.doc.next_note(f) {
+                    self.doc.frame = n;
+                }
+            }
+            ui.checkbox(&mut self.tl_notes, tr("Afficher les notes"));
         });
         let cl = self.doc.current_layer;
         ui.menu_button(tr("Avant / après"), |ui| {
@@ -655,6 +715,122 @@ impl AnimApp {
             {
                 self.doc.set_instance_name(cl, f, &name);
             }
+        }
+    }
+
+    /// Open the note of a frame to write or change it.
+    fn edit_note(&mut self, f: usize) {
+        let text = self.doc.notes.get(&f).cloned().unwrap_or_default();
+        self.note_edit = Some((f, text));
+        self.tl_notes = true;
+    }
+
+    /// The small window where a timeline note is written.
+    fn note_window(&mut self, ctx: &egui::Context) {
+        let Some((f, mut text)) = self.note_edit.take() else { return };
+        let mut open = true;
+        let mut done = false;
+        let mut remove = false;
+        egui::Window::new(trf("Note de l'image {}", &[&(f + 1)]))
+            .id(egui::Id::new("timeline-note"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                let field = ui.add(egui::TextEdit::multiline(&mut text).desired_rows(3).desired_width(320.0));
+                if !field.has_focus() && !field.lost_focus() && ui.memory(|m| m.focused().is_none()) {
+                    field.request_focus();
+                }
+                ui.horizontal(|ui| {
+                    if ui.button(tr("Valider")).clicked() {
+                        done = true;
+                    }
+                    if ui.button(tr("Retirer la note")).clicked() {
+                        remove = true;
+                    }
+                });
+            });
+        if remove {
+            self.doc.set_note(f, "");
+        } else if done {
+            self.doc.set_note(f, &text);
+        } else if open {
+            self.note_edit = Some((f, text));
+        }
+    }
+
+    /// Mark the drawing shown at a cell (0 removes the mark), with a word when it can't be done.
+    fn set_mark(&mut self, li: usize, f: usize, mark: u8) {
+        if mark > 0 {
+            self.mark_pick = mark;
+        }
+        if !self.doc.set_mark(li, f, mark) {
+            self.status = tr("Pas de dessin à marquer ici (ou calque verrouillé).").into();
+        }
+    }
+
+    /// The colours to mark an image with, and the way to the next and previous marked images.
+    fn mark_menu(&mut self, ui: &mut egui::Ui, li: usize, f: usize) {
+        let now = self.doc.mark_at(li, f).unwrap_or(0);
+        ui.horizontal(|ui| {
+            for m in 1..=12u8 {
+                let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                let resp = resp.on_hover_text(format!("{m}: {}", tr(crate::doc::GROUP_NAMES[m as usize])));
+                ui.painter().rect_filled(r, 3.0, c32(crate::doc::GROUPS[m as usize]));
+                if now == m {
+                    ui.painter()
+                        .rect_stroke(r, 3.0, Line::new(2.0_f32, Color32::WHITE), StrokeKind::Inside);
+                }
+                if resp.clicked() {
+                    self.set_mark(li, f, m);
+                    ui.close_menu();
+                }
+            }
+        });
+        if ui.add_enabled(now != 0, egui::Button::new(tr("Retirer la marque"))).clicked() {
+            self.set_mark(li, f, 0);
+            ui.close_menu();
+        }
+    }
+
+    /// Go to the next (or previous) marked image of the current layer.
+    fn step_mark(&mut self, forward: bool) {
+        let (l, f) = (self.doc.current_layer, self.doc.frame);
+        let to = if forward {
+            self.doc.next_mark(l, f)
+        } else {
+            self.doc.prev_mark(l, f)
+        };
+        match to {
+            Some(t) => self.doc.frame = t,
+            None => self.status = tr("Pas d'autre image marquée de ce côté sur ce calque.").into(),
+        }
+    }
+
+    fn insert_tweens(&mut self) {
+        let (l, f) = (self.doc.current_layer, self.doc.frame);
+        match self.doc.insert_tweens(l, f, self.tween_n, self.tween_mix) {
+            Some(at) => {
+                self.doc.frame = at;
+                self.cell_sel = None;
+                self.needs_full = true;
+                self.status = trf("{} intervalles insérés.", &[&self.tween_n]);
+            }
+            None => self.status = tr("Il faut un dessin après celui-ci sur le calque (non verrouillé).").into(),
+        }
+    }
+
+    /// Zoom the timeline in or out by a factor.
+    fn tl_zoom(&mut self, k: f32) {
+        self.tl_cell = (self.tl_cell * k).clamp(TL_CELL_MIN, TL_CELL_MAX);
+    }
+
+    /// A frame as the timeline's ruler writes it: its number, or seconds:frames.
+    fn frame_label(&self, f: usize) -> String {
+        if self.tl_timecode {
+            crate::doc::timecode(f, self.doc.fps)
+        } else {
+            format!("{}", f + 1)
         }
     }
 
@@ -1821,6 +1997,34 @@ impl AnimApp {
                         self.needs_full = true;
                         ui.close_menu();
                     }
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut self.tween_n).range(1..=99));
+                        if ui
+                            .button(tr("Insérer des intervalles"))
+                            .on_hover_text(tr(
+                                "Ajoute ce nombre de dessins entre ce dessin et le suivant du calque.",
+                            ))
+                            .clicked()
+                        {
+                            self.insert_tweens();
+                            ui.close_menu();
+                        }
+                        ui.checkbox(&mut self.tween_mix, tr("en fondu"))
+                            .on_hover_text(tr(
+                                "Chaque intervalle est un mélange des deux dessins qui l'entourent, pour dessiner par-dessus ; sinon il est vide.",
+                            ));
+                    });
+                    ui.separator();
+                    ui.menu_button(tr("Marque de l'image"), |ui| {
+                        let (l, f) = (self.doc.current_layer, self.doc.frame);
+                        self.mark_menu(ui, l, f);
+                    });
+                    if ui.button(tr("Image marquée précédente")).clicked() {
+                        self.step_mark(false);
+                    }
+                    if ui.button(tr("Image marquée suivante")).clicked() {
+                        self.step_mark(true);
+                    }
                     ui.separator();
                     if ui.button(tr("Effacer le dessin")).clicked() {
                         self.clear_drawing();
@@ -1930,6 +2134,7 @@ impl AnimApp {
                                     Ok(r) => {
                                         self.room_name_edit = r.name.clone();
                                         self.rooms[self.room] = r;
+                                        self.tl_cell = self.rooms[self.room].timeline_cell.clamp(TL_CELL_MIN, TL_CELL_MAX);
                                         self.layout_dirty = true;
                                     }
                                     Err(e) => self.status = trf("Échec de l'ouverture : {}", &[&e]),
@@ -1938,6 +2143,7 @@ impl AnimApp {
                         }
                         if ui.button(tr("Remettre cet espace par défaut")).clicked() {
                             self.rooms[self.room] = crate::layout::Room::default_room(self.room);
+                            self.tl_cell = TL_CELL;
                             self.room_name_edit.clear();
                             self.layout_dirty = true;
                             ui.close_menu();
@@ -3057,6 +3263,9 @@ impl AnimApp {
         if n < self.rooms.len() && n != self.room {
             self.rooms[self.room].keys = Some(self.keymap.to_cfg());
             self.room = n;
+            // each room keeps its own timeline zoom
+            self.tl_cell = self.rooms[n].timeline_cell.clamp(TL_CELL_MIN, TL_CELL_MAX);
+            self.tl_cell_shown = self.tl_cell;
             if let Some(cfg) = self.rooms[n].keys.clone() {
                 self.keymap = crate::keymap::KeyMap::from_cfg(&cfg, true).0;
                 crate::keymap::save(&self.keymap);
@@ -3136,6 +3345,51 @@ impl AnimApp {
                     self.doc.set_length(n);
                     self.needs_full = true;
                 }
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui
+                        .selectable_label(self.tl_timecode, tr("Timecode"))
+                        .on_hover_text(tr("La règle affiche le temps (secondes:images) au lieu des numéros d'image"))
+                        .clicked()
+                    {
+                        self.tl_timecode = !self.tl_timecode;
+                    }
+                    ui.menu_button(tr("Ajuster"), |ui| {
+                        if ui.button(tr("Tout le plan")).clicked() {
+                            self.tl_fit = Some(TlFit::Clip);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .add_enabled(self.cell_sel.is_some(), egui::Button::new(tr("Les cellules choisies")))
+                            .clicked()
+                        {
+                            self.tl_fit = Some(TlFit::Selection);
+                            ui.close_menu();
+                        }
+                        if ui.add_enabled(self.clip.is_some(), egui::Button::new(tr("Le son"))).clicked() {
+                            self.tl_fit = Some(TlFit::Sound);
+                            ui.close_menu();
+                        }
+                        if ui.button(tr("Taille normale")).clicked() {
+                            self.tl_cell = TL_CELL;
+                            ui.close_menu();
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr("Ajuster le zoom de la timeline"));
+                    if ui.button("+").on_hover_text(tr("Zoom avant de la timeline")).clicked() {
+                        self.tl_zoom(1.25);
+                    }
+                    ui.spacing_mut().slider_width = 80.0;
+                    ui.add(
+                        egui::Slider::new(&mut self.tl_cell, TL_CELL_MIN..=TL_CELL_MAX)
+                            .show_value(false)
+                            .logarithmic(true),
+                    )
+                    .on_hover_text(tr("Zoom de la timeline (aussi : Ctrl + molette)"));
+                    if ui.button("−").on_hover_text(tr("Zoom arrière de la timeline")).clicked() {
+                        self.tl_zoom(0.8);
+                    }
+                });
             });
             if compact {
                 return;
@@ -3253,6 +3507,9 @@ impl AnimApp {
         if !folded_unpinned {
             self.rooms[room].timeline_height = rect.height();
         }
+        if room == self.room {
+            self.rooms[room].timeline_cell = self.tl_cell;
+        }
         if !self.rooms[room].timeline_pinned {
             let busy = ctx.input(|i| i.pointer.any_down()) || ctx.memory(|m| m.any_popup_open());
             let over = ctx.pointer_hover_pos().is_some_and(|p| rect.expand(10.0).contains(p));
@@ -3265,7 +3522,7 @@ impl AnimApp {
         const COL: f32 = 250.0;
         const HEAD: f32 = 20.0;
         const ROW: f32 = 30.0;
-        const CELL: f32 = 24.0;
+        const NOTES: f32 = 18.0;
         let area = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(area, Sense::click_and_drag());
         let painter = ui.painter_at(area);
@@ -3273,11 +3530,16 @@ impl AnimApp {
         let rows: Vec<usize> = (0..nl_all).rev().filter(|&li| self.layer_in_timeline(li)).collect();
         let nl = rows.len();
         let nf = self.doc.frames;
-        let cells_w = area.width() - COL;
-        let max_x = (nf as f32 * CELL - cells_w + CELL).max(0.0);
-        let sound_rows = if self.peaks.is_empty() { 0 } else { 1 };
-        let max_y = ((nl + sound_rows) as f32 * ROW - (area.height() - HEAD)).max(0.0);
+        let cells_w = (area.width() - COL).max(1.0);
+        // the ruler, then the notes row when it is shown, then the layers
+        let top = HEAD + if self.tl_notes { NOTES } else { 0.0 };
+        let hover = resp.hover_pos();
         if resp.hovered() {
+            // Ctrl + wheel (or a pinch) zooms; the wheel alone scrolls
+            let z = ui.input(|i| i.zoom_delta());
+            if (z - 1.0).abs() > 1e-4 {
+                self.tl_zoom(z);
+            }
             let d = ui.input(|i| i.smooth_scroll_delta);
             let shift = ui.input(|i| i.modifiers.shift);
             if shift {
@@ -3287,12 +3549,53 @@ impl AnimApp {
                 self.tl_scroll.y -= d.y;
             }
         }
-        // keep the current frame visible
-        let fx = self.doc.frame as f32 * CELL;
-        if fx < self.tl_scroll.x {
-            self.tl_scroll.x = fx;
-        } else if fx + CELL > self.tl_scroll.x + cells_w {
-            self.tl_scroll.x = fx + CELL - cells_w;
+        // "Fit": the whole shot, the chosen cells or the sound across the width
+        if let Some(fit) = self.tl_fit.take() {
+            let (first, count) = match fit {
+                TlFit::Clip => (0, nf),
+                TlFit::Selection => match self.cell_sel {
+                    Some((_, a, b)) => (a.min(nf - 1), b.saturating_sub(a) + 1),
+                    None => (0, nf),
+                },
+                TlFit::Sound => match (&self.clip, &self.doc.sound) {
+                    (Some(c), Some(t)) => {
+                        let fps = self.doc.fps.max(1.0);
+                        let a = (t.offset.max(0.0) * fps).floor() as usize;
+                        let n = ((c.duration() + t.offset.min(0.0)).max(0.0) * fps).ceil() as usize;
+                        (a.min(nf - 1), n.max(1))
+                    }
+                    _ => (0, nf),
+                },
+            };
+            self.tl_cell = (cells_w / count.max(1) as f32).clamp(TL_CELL_MIN, TL_CELL_MAX);
+            self.tl_cell_shown = self.tl_cell;
+            self.tl_scroll.x = first as f32 * self.tl_cell;
+        }
+        let cell = self.tl_cell.clamp(TL_CELL_MIN, TL_CELL_MAX);
+        if (cell - self.tl_cell_shown).abs() > 1e-4 {
+            // the zoom changed: the frame under the pointer (else the current frame) stays put
+            let old = self.tl_cell_shown.max(0.1);
+            let anchor = match hover {
+                Some(p) if p.x >= area.left() + COL => p.x - area.left() - COL,
+                _ => (self.doc.frame as f32 + 0.5) * old - self.tl_scroll.x,
+            }
+            .clamp(0.0, cells_w);
+            let at = (anchor + self.tl_scroll.x) / old;
+            self.tl_scroll.x = at * cell - anchor;
+            self.tl_cell_shown = cell;
+        }
+        let max_x = (nf as f32 * cell - cells_w + cell).max(0.0);
+        let sound_rows = if self.peaks.is_empty() { 0 } else { 1 };
+        let max_y = ((nl + sound_rows) as f32 * ROW - (area.height() - top)).max(0.0);
+        // bring the current frame into view when it changes (scrolling away from it is allowed)
+        if self.doc.frame != self.tl_frame_seen {
+            self.tl_frame_seen = self.doc.frame;
+            let fx = self.doc.frame as f32 * cell;
+            if fx < self.tl_scroll.x {
+                self.tl_scroll.x = fx;
+            } else if fx + cell > self.tl_scroll.x + cells_w {
+                self.tl_scroll.x = fx + cell - cells_w;
+            }
         }
         self.tl_scroll.x = self.tl_scroll.x.clamp(0.0, max_x);
         self.tl_scroll.y = self.tl_scroll.y.clamp(0.0, max_y);
@@ -3304,12 +3607,19 @@ impl AnimApp {
         let text = th.text;
         let font = egui::FontId::proportional(12.0);
         let small = egui::FontId::proportional(10.0);
-        let cell_x = |f: usize| area.left() + COL + f as f32 * CELL - sx;
-        let row_y = |r: usize| area.top() + HEAD + r as f32 * ROW - sy;
+        let cell_x = |f: usize| area.left() + COL + f as f32 * cell - sx;
+        let row_y = |r: usize| area.top() + top + r as f32 * ROW - sy;
+        // frames between two numbers of the ruler and two lines of the grid
+        let label_w = if self.tl_timecode { 34.0 } else { 22.0 };
+        let step = [1usize, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
+            .into_iter()
+            .find(|n| *n as f32 * cell >= label_w)
+            .unwrap_or(1000);
+        let line_step = if cell >= 8.0 { 1 } else { step };
 
         // rows
-        let grid_clip = egui::Rect::from_min_max(pos2(area.left() + COL, area.top() + HEAD), area.max);
-        let col_clip = egui::Rect::from_min_max(pos2(area.left(), area.top() + HEAD), pos2(area.left() + COL, area.bottom()));
+        let grid_clip = egui::Rect::from_min_max(pos2(area.left() + COL, area.top() + top), area.max);
+        let col_clip = egui::Rect::from_min_max(pos2(area.left(), area.top() + top), pos2(area.left() + COL, area.bottom()));
         for (r, &li) in rows.iter().enumerate() {
             let layer = &self.doc.layers[li];
             let y = row_y(r);
@@ -3399,53 +3709,74 @@ impl AnimApp {
                 0.0,
                 th.panel.gamma_multiply(0.85),
             );
-            let first = (sx / CELL).floor() as usize;
-            let last = (((sx + cells_w) / CELL).ceil() as usize + 1).min(nf);
+            let first = (sx / cell).floor() as usize;
+            let last = (((sx + cells_w) / cell).ceil() as usize + 1).min(nf);
             let mut has_prev = self.doc.key_index(li, first).is_some();
             let numbers = self.doc.drawing_numbers(li);
             let tiny = egui::FontId::proportional(9.0);
             let lend = layer.end.filter(|e| *e + 1 < nf);
+            // zoomed out, the cells touch each other and lose their details
+            let gap = if cell >= 8.0 { 1.0 } else { 0.0 };
             for f in first..last {
                 let x = cell_x(f);
-                let c = egui::Rect::from_min_size(pos2(x + 1.0, y + 3.0), vec2(CELL - 2.0, ROW - 7.0));
+                let c = egui::Rect::from_min_size(pos2(x + gap, y + 3.0), vec2(cell - 2.0 * gap, ROW - 7.0));
                 let outside = lend.is_some_and(|e| f > e);
                 match layer.cels.get(f).copied().flatten() {
                     Some(id) => {
                         has_prev = true;
-                        g.rect_filled(c, 2.0, if outside { cell_col.gamma_multiply(0.35) } else { cell_col });
+                        g.rect_filled(c, 2.0 * gap, if outside { cell_col.gamma_multiply(0.35) } else { cell_col });
                         g.rect_filled(
-                            egui::Rect::from_min_size(c.min, vec2(3.0, c.height())),
+                            egui::Rect::from_min_size(c.min, vec2((cell * 0.2).clamp(1.0, 3.0), c.height())),
                             0.0,
                             th.text.gamma_multiply(0.6),
                         );
-                        let label: String = match layer.names.get(&id) {
-                            Some(n) => n.chars().take(3).collect(),
-                            None => numbers.get(&id).map(|n| n.to_string()).unwrap_or_default(),
-                        };
-                        g.text(
-                            c.center() + vec2(1.5, 0.0),
-                            egui::Align2::CENTER_CENTER,
-                            label,
-                            tiny.clone(),
-                            th.text.gamma_multiply(0.85),
-                        );
+                        if cell >= 16.0 {
+                            let label: String = match layer.names.get(&id) {
+                                Some(n) => n.chars().take(3).collect(),
+                                None => numbers.get(&id).map(|n| n.to_string()).unwrap_or_default(),
+                            };
+                            g.text(
+                                c.center() + vec2(1.5, 0.0),
+                                egui::Align2::CENTER_CENTER,
+                                label,
+                                tiny.clone(),
+                                th.text.gamma_multiply(0.85),
+                            );
+                        }
+                        // image mark: a corner in the mark's colour
+                        if let Some(m) = layer.marks.get(&id) {
+                            let k = (cell * 0.45).clamp(3.0, 9.0);
+                            let col = c32(crate::doc::GROUPS[(*m as usize).min(12)]);
+                            g.add(egui::Shape::convex_polygon(
+                                vec![c.right_top() - vec2(k, 0.0), c.right_top(), c.right_top() + vec2(0.0, k)],
+                                col,
+                                Line::new(1.0_f32, Color32::from_black_alpha(160)),
+                            ));
+                            g.rect_filled(
+                                egui::Rect::from_min_max(pos2(c.left(), c.bottom() - 3.0), c.right_bottom()),
+                                0.0,
+                                col,
+                            );
+                        }
                     }
                     None if has_prev && !outside => {
-                        g.rect_filled(c.shrink2(vec2(-1.0, 7.0)), 0.0, cell_col.gamma_multiply(0.7));
+                        g.rect_filled(c.shrink2(vec2(-gap, 7.0)), 0.0, cell_col.gamma_multiply(0.7));
                     }
                     None => {}
                 }
                 // what the post behaviour shows after the layer's end
                 if outside && layer.post != crate::doc::Behavior::None {
                     g.line_segment(
-                        [pos2(x + 2.0, y + ROW / 2.0), pos2(x + CELL - 2.0, y + ROW / 2.0)],
+                        [pos2(x + 2.0 * gap, y + ROW / 2.0), pos2(x + cell - 2.0 * gap, y + ROW / 2.0)],
                         Line::new(1.0_f32, cell_col.gamma_multiply(0.8)),
                     );
                 }
-                g.line_segment(
-                    [pos2(x + CELL, y), pos2(x + CELL, y + ROW - 1.0)],
-                    Line::new(1.0_f32, th.border.gamma_multiply(0.6)),
-                );
+                if (f + 1) % line_step == 0 {
+                    g.line_segment(
+                        [pos2(x + cell, y), pos2(x + cell, y + ROW - 1.0)],
+                        Line::new(1.0_f32, th.border.gamma_multiply(0.6)),
+                    );
+                }
             }
             if let Some(e) = lend {
                 let x = cell_x(e + 1);
@@ -3456,7 +3787,7 @@ impl AnimApp {
             }
             if let Some((sl, a, b)) = self.cell_sel {
                 if sl == li {
-                    let r = egui::Rect::from_min_max(pos2(cell_x(a), y + 1.0), pos2(cell_x(b) + CELL, y + ROW - 2.0));
+                    let r = egui::Rect::from_min_max(pos2(cell_x(a), y + 1.0), pos2(cell_x(b) + cell, y + ROW - 2.0));
                     g.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(60, 140, 255, 50));
                     g.rect_stroke(r, 2.0, Line::new(1.5_f32, Color32::from_rgb(60, 140, 255)), StrokeKind::Inside);
                 }
@@ -3494,8 +3825,8 @@ impl AnimApp {
                 0.0,
                 th.panel.gamma_multiply(0.7),
             );
-            let first = (sx / CELL).floor() as usize;
-            let last = (((sx + cells_w) / CELL).ceil() as usize + 1).min(nf);
+            let first = (sx / cell).floor() as usize;
+            let last = (((sx + cells_w) / cell).ceil() as usize + 1).min(nf);
             let wave = if muted {
                 Color32::from_gray(110)
             } else {
@@ -3509,7 +3840,7 @@ impl AnimApp {
                 let x = cell_x(f);
                 let hh = (ROW - 6.0) * v;
                 g.rect_filled(
-                    egui::Rect::from_center_size(pos2(x + CELL / 2.0, y + ROW / 2.0), vec2(CELL - 2.0, hh.max(1.0))),
+                    egui::Rect::from_center_size(pos2(x + cell / 2.0, y + ROW / 2.0), vec2(cell - 2.0, hh.max(1.0))),
                     1.0,
                     wave,
                 );
@@ -3522,17 +3853,58 @@ impl AnimApp {
             pos2(area.left() + COL, area.top()),
             pos2(area.right(), area.top() + HEAD),
         ));
-        let first = (sx / CELL).floor() as usize;
-        let last = (((sx + cells_w) / CELL).ceil() as usize + 1).min(nf);
+        let first = (sx / cell).floor() as usize;
+        let last = (((sx + cells_w) / cell).ceil() as usize + 1).min(nf);
         for f in first..last {
             let x = cell_x(f);
-            if (f + 1) % 5 == 0 || f == 0 || CELL >= 24.0 {
+            // frame numbers count from 1 (5, 10, 15…), times from 0
+            let shown = if self.tl_timecode {
+                f % step == 0
+            } else {
+                (f + 1) % step == 0 || f == 0
+            };
+            if shown {
                 hp.text(
-                    pos2(x + CELL / 2.0, area.top() + HEAD / 2.0),
+                    pos2(x + cell / 2.0, area.top() + HEAD / 2.0),
                     egui::Align2::CENTER_CENTER,
-                    format!("{}", f + 1),
+                    self.frame_label(f),
                     small.clone(),
                     text,
+                );
+            }
+        }
+        // notes row: each note is written from its frame up to the next note
+        if self.tl_notes {
+            let y = area.top() + HEAD;
+            painter.rect_filled(
+                egui::Rect::from_min_size(pos2(area.left(), y), vec2(area.width(), NOTES)),
+                0.0,
+                th.panel,
+            );
+            painter.text(
+                pos2(area.left() + 6.0, y + NOTES / 2.0),
+                egui::Align2::LEFT_CENTER,
+                tr("Notes"),
+                small.clone(),
+                text.gamma_multiply(0.7),
+            );
+            let note_col = Color32::from_rgb(250, 220, 120);
+            let mut notes = self.doc.notes.range(..nf).peekable();
+            while let Some((f, note)) = notes.next() {
+                let x0 = cell_x(*f);
+                let x1 = notes.peek().map(|n| cell_x(*n.0) - 2.0).unwrap_or(area.right());
+                if x1 < area.left() + COL || x0 > area.right() {
+                    continue;
+                }
+                let clip = egui::Rect::from_min_max(pos2(x0.max(area.left() + COL), y), pos2(x1.max(x0 + 4.0), y + NOTES));
+                let np = painter.with_clip_rect(clip.intersect(area));
+                np.rect_filled(egui::Rect::from_min_size(pos2(x0, y + 1.0), vec2(3.0, NOTES - 2.0)), 0.0, note_col);
+                np.text(
+                    pos2(x0 + 6.0, y + NOTES / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    note.lines().next().unwrap_or(""),
+                    small.clone(),
+                    note_col,
                 );
             }
         }
@@ -3548,7 +3920,7 @@ impl AnimApp {
             let (lo, hi) = self.doc.play_range();
             let shade = Color32::from_black_alpha(110);
             let left = cell_x(lo);
-            let right = cell_x(hi) + CELL;
+            let right = cell_x(hi) + cell;
             hp.rect_filled(
                 egui::Rect::from_min_max(pos2(area.left() + COL, area.top()), pos2(left, area.top() + HEAD)),
                 0.0,
@@ -3574,7 +3946,7 @@ impl AnimApp {
             }
         }
         for &b in &self.doc.bookmarks {
-            let x = cell_x(b) + CELL / 2.0;
+            let x = cell_x(b) + cell / 2.0;
             let t = area.top() + 1.0;
             hp.add(egui::Shape::convex_polygon(
                 vec![pos2(x - 5.0, t), pos2(x + 5.0, t), pos2(x, t + 7.0)],
@@ -3584,23 +3956,23 @@ impl AnimApp {
         }
         // current frame
         let x = cell_x(self.doc.frame);
-        if x + CELL > area.left() + COL {
+        if x + cell > area.left() + COL {
             let full = painter.with_clip_rect(egui::Rect::from_min_max(pos2(area.left() + COL, area.top()), area.max));
             full.rect_stroke(
-                egui::Rect::from_min_max(pos2(x, area.top()), pos2(x + CELL, area.bottom())),
+                egui::Rect::from_min_max(pos2(x, area.top()), pos2(x + cell, area.bottom())),
                 0.0,
                 Line::new(2.0_f32, Color32::from_rgb(230, 70, 60)),
                 StrokeKind::Inside,
             );
             full.rect_filled(
-                egui::Rect::from_min_max(pos2(x, area.top()), pos2(x + CELL, area.top() + HEAD)),
+                egui::Rect::from_min_max(pos2(x, area.top()), pos2(x + cell, area.top() + HEAD)),
                 0.0,
                 Color32::from_rgb(230, 70, 60),
             );
             full.text(
-                pos2(x + CELL / 2.0, area.top() + HEAD / 2.0),
+                pos2(x + cell / 2.0, area.top() + HEAD / 2.0),
                 egui::Align2::CENTER_CENTER,
-                format!("{}", self.doc.frame + 1),
+                self.frame_label(self.doc.frame),
                 small,
                 Color32::WHITE,
             );
@@ -3608,14 +3980,44 @@ impl AnimApp {
 
         // interaction
         self.tl_drag = resp.dragged();
+        let frame_at = |x: f32| (((x - area.left() - COL + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
         if resp.secondary_clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
-                self.tl_menu_frame = (((p.x - area.left() - COL + sx) / CELL).floor().max(0.0) as usize).min(nf - 1);
+                self.tl_menu_frame = frame_at(p.x);
+                // a right click on a layer's row makes it the current layer
+                if p.y >= area.top() + top {
+                    let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
+                    if r < nl {
+                        self.doc.current_layer = rows[r];
+                    }
+                }
+            }
+        }
+        // a double click in the notes row writes a note there; a note shows whole under the pointer
+        if self.tl_notes {
+            let in_notes = |p: Pos2| p.x >= area.left() + COL && p.y >= area.top() + HEAD && p.y < area.top() + top;
+            if let Some(p) = hover.filter(|p| in_notes(*p)) {
+                let f = frame_at(p.x);
+                if resp.double_clicked() {
+                    self.edit_note(f);
+                } else if let Some((_, note)) = self.doc.notes.range(..=f).next_back() {
+                    let note = note.clone();
+                    resp.clone().on_hover_text_at_pointer(note);
+                }
             }
         }
         resp.context_menu(|ui| {
             let f = self.tl_menu_frame;
             ui.label(trf("Image {}", &[&(f + 1)]));
+            ui.menu_button(tr("Marque de l'image"), |ui| {
+                let l = self.doc.current_layer;
+                self.mark_menu(ui, l, f);
+            });
+            if ui.button(tr("Note ici…")).clicked() {
+                self.edit_note(f);
+                ui.close_menu();
+            }
+            ui.separator();
             if ui.button(tr("Signet ici (ajouter / retirer)")).clicked() {
                 self.doc.toggle_bookmark(f);
                 ui.close_menu();
@@ -3645,10 +4047,10 @@ impl AnimApp {
         if let Some(p) = resp.interact_pointer_pos() {
             let pressed = (resp.clicked() || resp.drag_started() || resp.dragged()) && !resp.secondary_clicked();
             let shift = ui.input(|i| i.modifiers.shift);
-            if pressed && shift && p.y >= area.top() + HEAD && p.x >= area.left() + COL {
+            if pressed && shift && p.y >= area.top() + top && p.x >= area.left() + COL {
                 // shift + click / drag: select cells from the current frame
-                let frame = (((p.x - area.left() - COL + sx) / CELL).floor().max(0.0) as usize).min(nf - 1);
-                let r = ((p.y - area.top() - HEAD + sy) / ROW).floor() as usize;
+                let frame = (((p.x - area.left() - COL + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
+                let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
                 if r < nl {
                     let li = rows[r];
                     if self.cell_sel.map(|s| s.0) != Some(li) {
@@ -3664,13 +4066,13 @@ impl AnimApp {
                     self.cell_sel = None;
                 }
                 let in_cells = p.x >= area.left() + COL;
-                let frame = (((p.x - area.left() - COL + sx) / CELL).floor().max(0.0) as usize).min(nf - 1);
-                if p.y < area.top() + HEAD {
+                let frame = (((p.x - area.left() - COL + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
+                if p.y < area.top() + top {
                     if in_cells {
                         self.doc.frame = frame;
                     }
                 } else {
-                    let r = ((p.y - area.top() - HEAD + sy) / ROW).floor() as usize;
+                    let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
                     if r < nl {
                         let li = rows[r];
                         if in_cells {
@@ -5653,6 +6055,32 @@ impl AnimApp {
             r.right_pinned = !r.right_pinned;
             self.layout_dirty = true;
         }
+        if go(A::TimelineZoomIn) {
+            self.tl_zoom(1.25);
+        }
+        if go(A::TimelineZoomOut) {
+            self.tl_zoom(0.8);
+        }
+        if go(A::TimelineFit) {
+            self.tl_fit = Some(TlFit::Clip);
+        }
+        if go(A::TimelineTimecode) {
+            self.tl_timecode = !self.tl_timecode;
+        }
+        if go(A::MarkImage) {
+            let (l, f) = (self.doc.current_layer, self.doc.frame);
+            let m = if self.doc.mark_at(l, f).is_some() { 0 } else { self.mark_pick };
+            self.set_mark(l, f, m);
+        }
+        if go(A::NextMark) {
+            self.step_mark(true);
+        }
+        if go(A::PrevMark) {
+            self.step_mark(false);
+        }
+        if go(A::InsertTweens) {
+            self.insert_tweens();
+        }
         if go(A::MoveCellsLeft) {
             self.move_cells(false);
         }
@@ -6177,6 +6605,7 @@ impl eframe::App for AnimApp {
         self.column(ctx, Side::Right);
         self.floating_panels(ctx);
         self.stretch_window(ctx);
+        self.note_window(ctx);
         self.recovery_tick();
         self.bridge_tick();
         self.prefs_window(ctx);

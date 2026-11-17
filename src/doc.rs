@@ -87,6 +87,34 @@ pub struct Layer {
     /// The layer's effects, applied in order when the picture is made (not to the drawings).
     #[serde(default)]
     pub fx: Vec<crate::fx::FxEntry>,
+    /// Image marks, by drawing id: a colour number 1-12 (the colours of `GROUPS`) shown on the
+    /// drawing in the timeline, to tell keys, breakdowns and in-betweens apart.
+    #[serde(default)]
+    pub marks: std::collections::BTreeMap<usize, u8>,
+}
+
+impl Layer {
+    /// A new, empty layer with the defaults of new layers (no colour group, holds after its end).
+    pub fn new(name: String, cels: Vec<Option<usize>>) -> Layer {
+        Layer {
+            name,
+            visible: true,
+            locked: false,
+            opacity: 1.0,
+            onion: true,
+            cels,
+            blend: Blend::Color,
+            // a new layer is in group 0, no colour ([LayerDefault] Group = 0)
+            group: default_group(),
+            stencil: false,
+            pre: Behavior::None,
+            post: Behavior::Hold,
+            end: None,
+            names: Default::default(),
+            fx: vec![],
+            marks: Default::default(),
+        }
+    }
 }
 
 /// What a layer shows outside its own frames, numbered like the reference (
@@ -380,6 +408,8 @@ pub struct Doc {
     /// Play range ("Mark In" / "Mark Out"), inclusive.
     pub mark_in: Option<usize>,
     pub mark_out: Option<usize>,
+    /// Timeline notes: a text at a frame (dialogue, timing, a reminder), in frame order.
+    pub notes: std::collections::BTreeMap<usize, String>,
     /// Drawings through their layer's effects: (layer, frame) → (fingerprint, picture).
     /// Pictures with their layer's effects, by what they are made of (drawing, its pixels and the
     /// effect settings at that frame), so a held drawing is worked out once.
@@ -418,6 +448,7 @@ impl Doc {
             bookmarks: vec![],
             mark_in: None,
             mark_out: None,
+            notes: Default::default(),
             fx_cache: Default::default(),
             auto_break: crate::prefs::AUTO_BREAK.load(std::sync::atomic::Ordering::Relaxed),
             auto_stretch: crate::prefs::AUTO_STRETCH.load(std::sync::atomic::Ordering::Relaxed),
@@ -427,22 +458,7 @@ impl Doc {
             dirty: false,
         };
         let id = d.new_drawing();
-        d.layers.push(Layer {
-            name: "Anim 1".into(),
-            visible: true,
-            locked: false,
-            opacity: 1.0,
-            onion: true,
-            cels: vec![Some(id)],
-            blend: Blend::Color,
-            group: default_group(),
-            stencil: false,
-            pre: Behavior::None,
-            post: Behavior::Hold,
-            end: None,
-            names: Default::default(),
-            fx: vec![],
-        });
+        d.layers.push(Layer::new("Anim 1".into(), vec![Some(id)]));
         d
     }
 
@@ -876,7 +892,12 @@ impl Doc {
     }
 
     /// Insert copies of `cells` (drawing ids or holds) after the current frame of the current layer.
-    pub fn paste_cells(&mut self, cells: &[Option<usize>], names: &std::collections::BTreeMap<usize, String>) {
+    pub fn paste_cells(
+        &mut self,
+        cells: &[Option<usize>],
+        names: &std::collections::BTreeMap<usize, String>,
+        marks: &std::collections::BTreeMap<usize, u8>,
+    ) {
         let l = self.current_layer;
         if self.layers[l].locked || cells.is_empty() {
             return;
@@ -891,6 +912,9 @@ impl Doc {
                     let new = self.drawings.len() - 1;
                     if let Some(n) = names.get(id) {
                         self.layers[l].names.insert(new, n.clone());
+                    }
+                    if let Some(m) = marks.get(id) {
+                        self.layers[l].marks.insert(new, *m);
                     }
                     Some(new)
                 }
@@ -921,6 +945,102 @@ impl Doc {
 
     pub fn prev_bookmark(&self, from: usize) -> Option<usize> {
         self.bookmarks.iter().rev().copied().find(|b| *b < from)
+    }
+
+    /// The mark (1-12) of the drawing shown at a cell, if it has one.
+    pub fn mark_at(&self, li: usize, frame: usize) -> Option<u8> {
+        let id = self.drawing_at(li, frame)?;
+        self.layers[li].marks.get(&id).copied()
+    }
+
+    /// Mark the drawing shown at a cell with a colour number 1-12; 0 removes the mark.
+    /// Returns false when there is no drawing there or the layer is locked.
+    pub fn set_mark(&mut self, li: usize, frame: usize, mark: u8) -> bool {
+        if self.layers[li].locked {
+            return false;
+        }
+        let Some(id) = self.drawing_at(li, frame) else { return false };
+        let mark = mark.min(12);
+        let now = self.layers[li].marks.get(&id).copied().unwrap_or(0);
+        if now == mark {
+            return true;
+        }
+        self.push_structure_undo();
+        if mark == 0 {
+            self.layers[li].marks.remove(&id);
+        } else {
+            self.layers[li].marks.insert(id, mark);
+        }
+        true
+    }
+
+    /// The frame where the next marked drawing of a layer starts, after `from`.
+    pub fn next_mark(&self, li: usize, from: usize) -> Option<usize> {
+        let l = &self.layers[li];
+        self.keys(li)
+            .into_iter()
+            .find(|(f, id)| *f > from && l.marks.contains_key(id))
+            .map(|k| k.0)
+    }
+
+    /// The frame where the previous marked drawing of a layer starts, before the drawing shown
+    /// at `from`.
+    pub fn prev_mark(&self, li: usize, from: usize) -> Option<usize> {
+        let l = &self.layers[li];
+        let here = self.key_index(li, from).unwrap_or(from);
+        self.keys(li)
+            .into_iter()
+            .rev()
+            .find(|(f, id)| *f < here && l.marks.contains_key(id))
+            .map(|k| k.0)
+    }
+
+    /// Write a note at a frame of the timeline; an empty text removes it.
+    pub fn set_note(&mut self, frame: usize, text: &str) {
+        if text.trim().is_empty() {
+            self.notes.remove(&frame);
+        } else {
+            self.notes.insert(frame, text.trim().to_string());
+        }
+        self.dirty = true;
+    }
+
+    /// The frame of the next note after `from`, and of the previous one before it.
+    pub fn next_note(&self, from: usize) -> Option<usize> {
+        self.notes.range(from + 1..).next().map(|n| *n.0)
+    }
+
+    pub fn prev_note(&self, from: usize) -> Option<usize> {
+        self.notes.range(..from).next_back().map(|n| *n.0)
+    }
+
+    /// Insert `n` in-between drawings after the drawing shown at `frame`, just before the next
+    /// drawing of the layer. With `mix`, each one is a cross-fade of the two drawings around it
+    /// (a guide to draw over); without, they are blank. Returns the frame of the first one, or
+    /// None when the layer is locked or has no drawing after this one.
+    pub fn insert_tweens(&mut self, li: usize, frame: usize, n: usize, mix: bool) -> Option<usize> {
+        if self.layers[li].locked || n == 0 {
+            return None;
+        }
+        let k = self.key_index(li, frame)?;
+        let a = self.layers[li].cels[k]?;
+        let (at, b) = self.keys(li).into_iter().find(|(f, _)| *f > k)?;
+        self.push_structure_undo();
+        let mut cells = Vec::with_capacity(n);
+        for i in 1..=n {
+            let id = if mix {
+                let t = i as f32 / (n + 1) as f32;
+                let px = cross_fade(&self.drawings[a].px, &self.drawings[b].px, t);
+                self.drawings.push(Drawing { px });
+                self.drawings.len() - 1
+            } else {
+                self.new_drawing()
+            };
+            cells.push(Some(id));
+        }
+        self.layers[li].cels.splice(at..at, cells);
+        self.pad_all();
+        Some(at)
     }
 
     /// Frames played: from mark in to mark out (inclusive), else the whole project.
@@ -1009,26 +1129,7 @@ impl Doc {
         let id = self.new_drawing();
         cels[0] = Some(id);
         let at = self.current_layer + 1;
-        self.layers.insert(
-            at,
-            Layer {
-                name: format!("Anim {n}"),
-                visible: true,
-                locked: false,
-                opacity: 1.0,
-                onion: true,
-                cels,
-                blend: Blend::Color,
-                // a new layer is in group 0, no colour ([LayerDefault] Group = 0)
-                group: default_group(),
-                stencil: false,
-                pre: Behavior::None,
-                post: Behavior::Hold,
-                end: None,
-                names: Default::default(),
-                fx: vec![],
-            },
-        );
+        self.layers.insert(at, Layer::new(format!("Anim {n}"), cels));
         self.current_layer = at;
     }
 
@@ -1036,6 +1137,7 @@ impl Doc {
         self.push_structure_undo();
         let mut l = self.layers[self.current_layer].clone();
         let mut names = std::collections::BTreeMap::new();
+        let mut marks = std::collections::BTreeMap::new();
         for c in l.cels.iter_mut() {
             if let Some(id) = *c {
                 let d = self.drawings[id].clone();
@@ -1044,10 +1146,14 @@ impl Doc {
                 if let Some(n) = l.names.get(&id) {
                     names.insert(new, n.clone());
                 }
+                if let Some(m) = l.marks.get(&id) {
+                    marks.insert(new, *m);
+                }
                 *c = Some(new);
             }
         }
         l.names = names;
+        l.marks = marks;
         l.name = crate::i18n::trf("{} copie", &[&l.name]);
         let at = self.current_layer + 1;
         self.layers.insert(at, l);
@@ -1094,6 +1200,7 @@ impl Doc {
         let (opacity, mode) = (self.layers[up].opacity, self.layers[up].blend);
         let mut cels: Vec<Option<usize>> = Vec::with_capacity(n);
         let mut names = std::collections::BTreeMap::new();
+        let mut marks = std::collections::BTreeMap::new();
         let mut prev: Option<(Option<usize>, Option<usize>)> = None;
         let mut cache: std::collections::HashMap<(Option<usize>, Option<usize>), usize> = Default::default();
         for f in 0..n {
@@ -1135,6 +1242,14 @@ impl Doc {
                     names.insert(id, n);
                 }
             }
+            if opts.keep_image_marks {
+                // the marks of both layers are kept, the upper layer's on top
+                let lm = pair.0.and_then(|l| self.layers[low].marks.get(&l)).copied();
+                let um = pair.1.and_then(|u| self.layers[up].marks.get(&u)).copied();
+                if let Some(m) = um.or(lm) {
+                    marks.insert(id, m);
+                }
+            }
             cels.push(Some(id));
         }
         let up_group = self.layers[up].group;
@@ -1145,6 +1260,7 @@ impl Doc {
         l.pre = Behavior::None;
         l.post = Behavior::Hold;
         l.names = names;
+        l.marks = marks;
         // keep colour group: the upper layer's group when it has one; otherwise none
         if opts.keep_color_group {
             if up_group != default_group() {
@@ -1284,6 +1400,7 @@ impl Doc {
         let mut l = c.layer.clone();
         l.cels = l.cels.iter().map(|cel| cel.map(|id| map[&id])).collect();
         l.names = l.names.iter().filter_map(|(id, n)| map.get(id).map(|m| (*m, n.clone()))).collect();
+        l.marks = l.marks.iter().filter_map(|(id, k)| map.get(id).map(|m| (*m, *k))).collect();
         l.locked = false;
         let at = (self.current_layer + 1).min(self.layers.len());
         self.layers.insert(at, l);
@@ -1429,7 +1546,15 @@ impl Doc {
             self.drawings.push(Drawing { px });
             let new = self.drawings.len() - 1;
             done.insert((id, key), new);
-            self.layers[li].cels[key] = Some(new);
+            let l = &mut self.layers[li];
+            l.cels[key] = Some(new);
+            // the drawing's name and mark follow it
+            if let Some(n) = l.names.get(&id).cloned() {
+                l.names.insert(new, n);
+            }
+            if let Some(m) = l.marks.get(&id).copied() {
+                l.marks.insert(new, m);
+            }
         }
         self.layers[li].fx.clear();
         self.fx_cache.lock().unwrap().clear();
@@ -1828,6 +1953,8 @@ pub struct MergeOptions {
     pub keep_color_group: bool,
     /// The merged drawings keep their names ("upper-lower" when both have one).
     pub keep_instance_names: bool,
+    /// The merged drawings keep their image marks (the upper layer's when both have one).
+    pub keep_image_marks: bool,
 }
 
 impl Default for MergeOptions {
@@ -1835,8 +1962,36 @@ impl Default for MergeOptions {
         MergeOptions {
             keep_color_group: true,
             keep_instance_names: true,
+            keep_image_marks: true,
         }
     }
+}
+
+/// A frame as a time: whole seconds, then the frames into that second ("2:05").
+pub fn timecode(frame: usize, fps: f32) -> String {
+    let fps = fps.max(1.0);
+    let sec = (frame as f32 / fps).floor();
+    let rest = frame.saturating_sub((sec * fps).ceil() as usize);
+    format!("{}:{:02}", sec as usize, rest)
+}
+
+/// A picture between `a` and `b` (straight-alpha RGBA): `t` = 0 gives `a`, 1 gives `b`.
+pub fn cross_fade(a: &[u8], b: &[u8], t: f32) -> Vec<u8> {
+    let t = t.clamp(0.0, 1.0);
+    let mut out = vec![0u8; a.len()];
+    for ((o, p), q) in out.chunks_exact_mut(4).zip(a.chunks_exact(4)).zip(b.chunks_exact(4)) {
+        let wa = p[3] as f32 * (1.0 - t);
+        let wb = q[3] as f32 * t;
+        let alpha = wa + wb;
+        if alpha <= 0.0 {
+            continue;
+        }
+        for k in 0..3 {
+            o[k] = ((p[k] as f32 * wa + q[k] as f32 * wb) / alpha).round() as u8;
+        }
+        o[3] = alpha.round().min(255.0) as u8;
+    }
+    out
 }
 
 /// Paint `src` over `dst` (both straight-alpha RGBA) with an opacity and a blending mode.
@@ -2206,6 +2361,52 @@ mod tests {
         d.layers[0].post = Behavior::PingPong;
         assert_eq!((4..8).map(|f| k(&d, f).unwrap()).collect::<Vec<_>>(), vec![2, 1, 0, 1]);
         assert_eq!(Behavior::PingPong.id(), 2);
+    }
+
+    #[test]
+    fn marks_notes_and_tweens() {
+        let mut d = doc4(); // drawings at 0, 1, 2, 3 of 8 frames
+        assert!(d.set_mark(0, 2, 1));
+        assert!(d.set_mark(0, 5, 3), "a held cell marks the drawing it shows");
+        assert_eq!(d.mark_at(0, 3), Some(3));
+        assert_eq!(d.mark_at(0, 7), Some(3));
+        assert_eq!(d.next_mark(0, 0), Some(2));
+        assert_eq!(d.next_mark(0, 2), Some(3));
+        assert_eq!(d.prev_mark(0, 7), Some(2), "from a hold, the drawing before the one shown");
+        assert_eq!(d.prev_mark(0, 2), None);
+        assert!(d.set_mark(0, 2, 0));
+        assert_eq!(d.mark_at(0, 2), None);
+        assert!(d.undo());
+        assert_eq!(d.mark_at(0, 2), Some(1), "a mark can be undone");
+        // notes
+        d.set_note(4, " hello ");
+        d.set_note(1, "first");
+        assert_eq!(d.notes.get(&4).map(String::as_str), Some("hello"));
+        assert_eq!((d.next_note(1), d.prev_note(4), d.next_note(4)), (Some(4), Some(1), None));
+        d.set_note(4, "");
+        assert!(!d.notes.contains_key(&4));
+        // tweens: two half-way pictures between the drawings at 0 and 1
+        let (a, b) = (d.drawing_at(0, 0).unwrap(), d.drawing_at(0, 1).unwrap());
+        d.drawings[a].px[0..4].copy_from_slice(&[200, 0, 0, 255]);
+        d.drawings[b].px[0..4].copy_from_slice(&[0, 100, 0, 255]);
+        d.drawings[b].px[4..8].copy_from_slice(&[0, 0, 90, 255]);
+        let frames = d.frames;
+        assert_eq!(d.insert_tweens(0, 0, 3, true), Some(1));
+        assert_eq!(d.frames, frames + 3);
+        assert_eq!(d.drawing_at(0, 4), Some(b), "the next drawing moved after the tweens");
+        let mid = &d.drawings[d.drawing_at(0, 2).unwrap()].px;
+        assert_eq!(&mid[0..4], &[100, 50, 0, 255], "half of each where both are drawn");
+        assert_eq!(&mid[4..8], &[0, 0, 90, 128], "half as opaque where only one is drawn");
+        assert!(
+            d.insert_tweens(0, d.frames - 1, 1, false).is_none(),
+            "no drawing after the last one"
+        );
+        assert_eq!(timecode(0, 24.0), "0:00");
+        assert_eq!(timecode(23, 24.0), "0:23");
+        assert_eq!(timecode(53, 24.0), "2:05");
+        assert_eq!(timecode(13, 12.5), "1:00", "the first whole frame of the second second at 12.5 fps");
+        assert!(d.undo());
+        assert_eq!(d.frames, frames);
     }
 
     #[test]

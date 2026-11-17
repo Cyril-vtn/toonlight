@@ -59,6 +59,14 @@ pub enum Action {
     PinLeft,
     PinRight,
     PinAll,
+    TimelineZoomIn,
+    TimelineZoomOut,
+    TimelineFit,
+    TimelineTimecode,
+    MarkImage,
+    NextMark,
+    PrevMark,
+    InsertTweens,
     Tool(Tool),
 }
 
@@ -114,6 +122,14 @@ pub fn all_actions() -> Vec<Action> {
         PinLeft,
         PinRight,
         PinAll,
+        TimelineZoomIn,
+        TimelineZoomOut,
+        TimelineFit,
+        TimelineTimecode,
+        MarkImage,
+        NextMark,
+        PrevMark,
+        InsertTweens,
     ];
     v.extend(ALL_TOOLS.iter().map(|t| Tool(*t)));
     v
@@ -173,6 +189,14 @@ impl Action {
             PinLeft => "bin_left_toggle".into(),
             PinRight => "bin_right_toggle".into(),
             PinAll => "bins_toggle_all".into(),
+            TimelineZoomIn => "timeline_zoom_in".into(),
+            TimelineZoomOut => "timeline_zoom_out".into(),
+            TimelineFit => "timeline_fit".into(),
+            TimelineTimecode => "timeline_timecode".into(),
+            MarkImage => "image_mark_toggle".into(),
+            NextMark => "image_mark_next".into(),
+            PrevMark => "image_mark_previous".into(),
+            InsertTweens => "insert_tweens".into(),
             Tool(t) => format!("tool_{}", format!("{t:?}").to_lowercase()),
         }
     }
@@ -234,6 +258,14 @@ impl Action {
             PinLeft => tr("Épingler / replier la colonne de gauche").into(),
             PinRight => tr("Épingler / replier la colonne de droite").into(),
             PinAll => tr("Épingler / replier les deux colonnes").into(),
+            TimelineZoomIn => tr("Zoom avant de la timeline").into(),
+            TimelineZoomOut => tr("Zoom arrière de la timeline").into(),
+            TimelineFit => tr("Timeline : voir tout le plan").into(),
+            TimelineTimecode => tr("Timeline : images ou timecode").into(),
+            MarkImage => tr("Marquer l'image (ajouter / retirer)").into(),
+            NextMark => tr("Image marquée suivante").into(),
+            PrevMark => tr("Image marquée précédente").into(),
+            InsertTweens => tr("Insérer des intervalles").into(),
             Tool(t) => crate::i18n::trf("Outil : {}", &[&t.label()]),
         }
     }
@@ -540,6 +572,18 @@ impl Default for KeyMap {
             }],
         );
         for a in [Room1, Room2, Room3, Room4, PinLeft, PinRight, PinAll] {
+            set(a, vec![]);
+        }
+        for a in [
+            TimelineZoomIn,
+            TimelineZoomOut,
+            TimelineFit,
+            TimelineTimecode,
+            MarkImage,
+            NextMark,
+            PrevMark,
+            InsertTweens,
+        ] {
             set(a, vec![]);
         }
         for t in ALL_TOOLS {

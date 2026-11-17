@@ -7,14 +7,13 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **49** done, **21** partial, **79** missing.
+Today: **52** done, **21** partial, **76** missing.
 
 ## Next (P1)
 
 1. Drawing: tablet pressure on macOS, pen tilt.
-2. Timeline: insert tween images, zoom, notes, keys on frames.
-3. Layers: shift / slide / split, selecting several layers.
-4. Sound: several sound tracks, sound across shots in the film export.
+2. Layers: shift / slide / split, selecting several layers.
+3. Sound: several sound tracks, sound across shots in the film export.
 
 ---
 
@@ -95,12 +94,12 @@ Today: **49** done, **21** partial, **79** missing.
 | Repeat images (loop, ping-pong, random) | ✅ | — |
 | Instance names (rename, smart rename, reset), go to head / tail / next / previous instance | 🟡 | P3 |
 | Auto break instance / auto create frame when drawing on a hold | ✅ | — |
-| Insert tween images | ❌ | P2 |
+| Insert in-between (tween) images, cross-faded or blank | ✅ | — |
 | Recompute exposures (merge identical drawings, with threshold) | ❌ | P3 |
 | Selecting several cells / images / keys, then copy / move them | ✅ | — |
-| Keys (marks) on frames, next / previous key | ❌ | P2 |
+| Image marks (12 colours) on drawings, next / previous marked image | ✅ | — |
 | Bookmarks, mark in / mark out (play range) | ✅ | — |
-| Timeline notes, zoom in / out, fit to clip / sound / selection, frames ↔ timecode | ❌ | P2 |
+| Timeline notes, zoom in / out, fit to clip / sound / selection, frames ↔ timecode | ✅ | — |
 | Exposure sheet (X-sheet) | ✅ | — |
 | Timesheet plugin (paper timesheet export / print) | ❌ | P2 |
 | Field chart, animator field, safe area | 🟡 | P3 |
