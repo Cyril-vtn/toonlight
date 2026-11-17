@@ -24,7 +24,7 @@ jobs:
             os: windows-latest
             formats: nsis
           - name: macOS (Apple Silicon)
-            os: macos-latest
+            os: macos-15
             formats: app,dmg
           - name: Linux
             os: ubuntu-22.04
