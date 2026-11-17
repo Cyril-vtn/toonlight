@@ -248,6 +248,22 @@ impl Server {
         }
     }
 
+    /// The layers named by `layers` (a list of indexes), else the one named by `layer`.
+    fn layers_arg(&self, a: &Value) -> Result<Vec<usize>, String> {
+        let Some(list) = a.get("layers").and_then(Value::as_array) else {
+            return Ok(vec![self.layer_arg(a)?]);
+        };
+        let mut out = vec![];
+        for v in list {
+            let l = v.as_u64().ok_or("layers is a list of layer indexes")? as usize;
+            if l >= self.doc.layers.len() {
+                return Err(format!("layer {l} does not exist (0..{})", self.doc.layers.len() - 1));
+            }
+            out.push(l);
+        }
+        Ok(out)
+    }
+
     fn frame_arg(&self, a: &Value) -> Result<usize, String> {
         match a.get("frame").and_then(Value::as_u64) {
             Some(f) if (f as usize) < self.doc.frames => Ok(f as usize),
@@ -280,6 +296,7 @@ impl Server {
                     "blend": format!("{:?}", l.blend).to_lowercase(),
                     "color_group": crate::doc::group_index(l.group).map(|i| json!(i)).unwrap_or_else(|| json!(hex(l.group))),
                     "light_table": l.onion,
+                    "selected": l.selected,
                     "drawings_start_at_frames": self.doc.keys(i).iter().map(|k| k.0).collect::<Vec<_>>(),
                     "drawing_names": l.names.iter().filter_map(|(id, n)| l.cels.iter().position(|c| *c == Some(*id)).map(|f| (f.to_string(), json!(n)))).collect::<serde_json::Map<_, _>>(),
                     "image_marks": self.doc.keys(i).iter().filter_map(|(f, id)| l.marks.get(id).map(|m| (f.to_string(), json!(m)))).collect::<serde_json::Map<_, _>>(),
@@ -508,8 +525,8 @@ impl Server {
                         .ok_or("blend is color, multiply, screen, add, overlay, darken, lighten, difference or erase")?;
                 }
                 if let Some(c) = a.get("color_group") {
-                    // a number picks one of the 13 groups (clamped to 0..12 like the reference's
-                    // tv_layercolor); a colour sets it directly
+                    // a number picks one of the 13 groups (clamped to 0..12); a colour sets it
+                    // directly
                     layer.group = match c.as_u64() {
                         Some(i) => crate::doc::GROUPS[(i as usize).min(12)],
                         None => color_arg(c)?,
@@ -518,12 +535,12 @@ impl Server {
                 Ok(text(format!("Layer {l} updated.")))
             }
             "layer_delete" => {
-                self.doc.current_layer = self.layer_arg(a)?;
+                let layers = self.layers_arg(a)?;
                 if self.doc.layers.len() <= 1 {
                     return Err("the last layer can't be deleted".into());
                 }
-                self.doc.delete_layer();
-                Ok(text("Layer deleted."))
+                let n = self.doc.delete_layers(&layers);
+                Ok(text(format!("{n} layer(s) deleted; {} left.", self.doc.layers.len())))
             }
             "layer_merge" => {
                 self.doc.current_layer = self.layer_arg(a)?;
@@ -535,10 +552,18 @@ impl Server {
                 let ok = match a.get("what").and_then(Value::as_str).unwrap_or("down") {
                     "down" => self.doc.merge_down(opts),
                     "visible" => self.doc.merge_visible(opts),
-                    other => return Err(format!("what {other}: use down or visible")),
+                    "selected" => {
+                        let layers = if a.get("layers").is_some() {
+                            self.layers_arg(a)?
+                        } else {
+                            self.doc.target_layers()
+                        };
+                        self.doc.merge_layers(&layers, opts)
+                    }
+                    other => return Err(format!("what {other}: use down, visible or selected")),
                 };
                 if !ok {
-                    return Err("nothing to merge: no layer below, fewer than two visible layers, or a locked layer".into());
+                    return Err("nothing to merge: no layer below, fewer than two layers, or a locked layer".into());
                 }
                 Ok(text(format!(
                     "Merged; {} layers now, current layer {}.",
@@ -649,6 +674,28 @@ impl Server {
                         self.doc.toggle_bookmark(from);
                         Ok(text(format!("Bookmarks: {:?}", self.doc.bookmarks)))
                     }
+                    "shift" => {
+                        let by = a.get("by").and_then(Value::as_i64).ok_or("by is missing")?;
+                        let layers = self.layers_arg(a)?;
+                        let moved = self.doc.shift_layers(&layers, by);
+                        if moved == 0 {
+                            return Err("the layer can't move: it is locked, has no drawing, or already starts at the first frame".into());
+                        }
+                        Ok(text(format!("Shifted by {moved} frames; {} frames now.", self.doc.frames)))
+                    }
+                    "slide" => {
+                        let by = a.get("by").and_then(Value::as_i64).ok_or("by is missing")?;
+                        if !self.doc.slide_layer(l, by) {
+                            return Err("nothing to slide on this layer, or it is locked".into());
+                        }
+                        Ok(text(format!("The drawings of layer {l} slid by {by} frames inside the layer.")))
+                    }
+                    "split" => {
+                        if !self.doc.split_layer(l, from) {
+                            return Err("the layer can't be split there: pick a frame after its first drawing and not after its end (and unlock it)".into());
+                        }
+                        Ok(text(format!("Layer {l} now ends at frame {}; the rest is the new layer {} (now current).", from - 1, l + 1)))
+                    }
                     "mark_image" => {
                         let m = a.get("mark").and_then(Value::as_u64).ok_or("mark is missing (1-12, 0 removes it)")?.min(12) as u8;
                         for f in from..=to {
@@ -677,7 +724,7 @@ impl Server {
                         self.doc.mark_out = if a.get("clear").and_then(Value::as_bool).unwrap_or(false) { None } else { Some(from) };
                         Ok(text(format!("Play range {:?}.", self.doc.play_range())))
                     }
-                    other => Err(format!("action {other}: use set_exposure, add_exposures, remove_exposures, move_cells, delete_cells, repeat, stretch, set_number, name_drawing, bookmark, mark_in, mark_out, mark_image, note or insert_tweens")),
+                    other => Err(format!("action {other}: use set_exposure, add_exposures, remove_exposures, move_cells, delete_cells, repeat, stretch, set_number, name_drawing, bookmark, mark_in, mark_out, mark_image, note, insert_tweens, shift, slide or split")),
                 }
             }
             "frame_remove" => {
@@ -1349,7 +1396,7 @@ impl Server {
                 Ok(text(format!("{count} pictures imported into layer {l}, one per frame.")))
             }
             "color_group" => {
-                // like tv_layercolor: act on every layer of a group, answer how many
+                // act on every layer of a group and answer how many
                 let g = crate::doc::GROUPS[a.get("group").and_then(Value::as_u64).unwrap_or(0).min(12) as usize];
                 let action = a.get("action").and_then(Value::as_str).unwrap_or("list");
                 if action == "list" {
@@ -1370,7 +1417,9 @@ impl Server {
                         "unlock" => layer.locked = false,
                         "show" => layer.visible = true,
                         "hide" => layer.visible = false,
-                        other => return Err(format!("action {other}: use list, lock, unlock, show or hide")),
+                        "select" => layer.selected = true,
+                        "deselect" => layer.selected = false,
+                        other => return Err(format!("action {other}: use list, lock, unlock, show, hide, select or deselect")),
                     }
                     n += 1;
                 }
@@ -1781,18 +1830,18 @@ fn tools() -> Value {
             "end": {"type": ["integer", "null"]}, "before": {"type": "string", "enum": ["none", "repeat", "pingpong", "hold"]}, "after": {"type": "string", "enum": ["none", "repeat", "pingpong", "hold"]}, "auto_break": {"type": "boolean", "description": "Painting on a held cell makes a new drawing there (project-wide, default true)"}, "auto_stretch": {"type": "boolean", "description": "Painting after a layer's end makes it longer (project-wide, default true); off, painting there is refused"},
             "light_table": {"type": "boolean"}, "opacity": {"type": "number"}, "blend": {"type": "string", "enum": blends},
             "color_group": {"description": "A group number 0-12 (0 = no colour; 1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white) or a colour", "oneOf": [{"type": "integer"}, {"type": "string"}, {"type": "array", "items": {"type": "integer"}}]}}}},
-        {"name": "color_group", "title": "Colour group", "description": "Layers by colour group: list (each group with its colour and layers), or lock, unlock, show or hide every layer of group (0-12); answers how many layers.",
-         "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "lock", "unlock", "show", "hide"]}, "group": {"type": "integer"}}}},
-        {"name": "layer_delete", "title": "Delete layer", "description": "Delete a layer.",
-         "inputSchema": {"type": "object", "properties": {"layer": layer}}, "annotations": {"destructiveHint": true}},
-        {"name": "layer_merge", "title": "Merge layers", "description": "Merge a layer down onto the layer under it (what = down, default), or every visible layer into the lowest visible one (what = visible). The upper layer's opacity and blending are painted in; holds and before / after behaviours are followed. keep_color_group, keep_instance_names and keep_image_marks (default true) keep the colour group, the drawing names and the image marks.",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "what": {"type": "string", "enum": ["down", "visible"]}, "keep_color_group": {"type": "boolean"}, "keep_instance_names": {"type": "boolean"}, "keep_image_marks": {"type": "boolean"}}}},
+        {"name": "color_group", "title": "Colour group", "description": "Layers by colour group: list (each group with its colour and layers), or lock, unlock, show, hide, select or deselect every layer of group (0-12); answers how many layers. Selected layers are the ones actions on several layers use (layer_merge what = selected).",
+         "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "lock", "unlock", "show", "hide", "select", "deselect"]}, "group": {"type": "integer"}}}},
+        {"name": "layer_delete", "title": "Delete layer", "description": "Delete a layer, or several at once with layers (one layer always stays).",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "layers": {"type": "array", "items": {"type": "integer"}}}}, "annotations": {"destructiveHint": true}},
+        {"name": "layer_merge", "title": "Merge layers", "description": "Merge a layer down onto the layer under it (what = down, default), every visible layer into the lowest visible one (what = visible), or the layers listed in `layers` (else the selected ones) into the lowest of them (what = selected). The upper layer's opacity and blending are painted in; holds and before / after behaviours are followed. keep_color_group, keep_instance_names and keep_image_marks (default true) keep the colour group, the drawing names and the image marks.",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "what": {"type": "string", "enum": ["down", "visible", "selected"]}, "layers": {"type": "array", "items": {"type": "integer"}}, "keep_color_group": {"type": "boolean"}, "keep_instance_names": {"type": "boolean"}, "keep_image_marks": {"type": "boolean"}}}},
         {"name": "layer_move", "title": "Move layer", "description": "Move a layer up or down in the stack.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "direction": {"type": "string", "enum": ["up", "down"]}}, "required": ["direction"]}},
         {"name": "frame_add", "title": "Add frame", "description": "After the given frame on a layer: a new blank drawing, a duplicate of the drawing, or hold the drawing one more frame. Moves to the new frame.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "kind": {"type": "string", "enum": ["blank", "duplicate", "hold"]}}}},
-        {"name": "timing", "title": "Timing", "description": "Timing of a layer's cells from frame `from` to `to` (default: the current frame): set_exposure (every drawing lasts `frames` frames), add_exposures / remove_exposures (hold the drawing at `from` `frames` more or less), move_cells (`by` frames, + = later), delete_cells, repeat (`frames` times, mode loop / pingpong / random), stretch (the layer to `frames` frames), set_number (exposure sheet: frames from..to show drawing `number`), name_drawing (`name`), bookmark (toggle at `from`), mark_in / mark_out (play range start / end at `from`; `clear` removes it), mark_image (give the drawings shown at from..to the colour `mark` 1-12, as keys / breakdowns / in-betweens; 0 removes it), note (write `text` on the timeline at `from`; empty removes it), insert_tweens (`frames` in-between drawings after the drawing at `from`, before the layer's next drawing; each is a cross-fade of the two unless mix is false).",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["set_exposure", "add_exposures", "remove_exposures", "move_cells", "delete_cells", "repeat", "stretch", "set_number", "name_drawing", "bookmark", "mark_in", "mark_out", "mark_image", "note", "insert_tweens"]}, "mark": {"type": "integer", "description": "For mark_image: colour 1-12 (1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white), 0 = no mark"}, "text": {"type": "string"}, "mix": {"type": "boolean"}, "number": {"description": "For set_number: the drawing number shown (as typed in the exposure sheet; a new number makes a new drawing; empty or \"-\" = none)", "oneOf": [{"type": "integer"}, {"type": "string"}]}, "mode": {"type": "string", "enum": ["loop", "pingpong", "random"]},
+        {"name": "timing", "title": "Timing", "description": "Timing of a layer's cells from frame `from` to `to` (default: the current frame): set_exposure (every drawing lasts `frames` frames), add_exposures / remove_exposures (hold the drawing at `from` `frames` more or less), move_cells (`by` frames, + = later), delete_cells, repeat (`frames` times, mode loop / pingpong / random), stretch (the layer to `frames` frames), set_number (exposure sheet: frames from..to show drawing `number`), name_drawing (`name`), bookmark (toggle at `from`), mark_in / mark_out (play range start / end at `from`; `clear` removes it), mark_image (give the drawings shown at from..to the colour `mark` 1-12, as keys / breakdowns / in-betweens; 0 removes it), note (write `text` on the timeline at `from`; empty removes it), insert_tweens (`frames` in-between drawings after the drawing at `from`, before the layer's next drawing; each is a cross-fade of the two unless mix is false), shift (move the layer's whole animation `by` frames, + = later; `layers` moves several together; earlier stops at the first frame), slide (move the drawings `by` frames inside the layer, which keeps its first and last frame), split (cut the layer in two at `from`: the rest goes to a new layer above).",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["set_exposure", "add_exposures", "remove_exposures", "move_cells", "delete_cells", "repeat", "stretch", "set_number", "name_drawing", "bookmark", "mark_in", "mark_out", "mark_image", "note", "insert_tweens", "shift", "slide", "split"]}, "layers": {"type": "array", "items": {"type": "integer"}}, "mark": {"type": "integer", "description": "For mark_image: colour 1-12 (1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white), 0 = no mark"}, "text": {"type": "string"}, "mix": {"type": "boolean"}, "number": {"description": "For set_number: the drawing number shown (as typed in the exposure sheet; a new number makes a new drawing; empty or \"-\" = none)", "oneOf": [{"type": "integer"}, {"type": "string"}]}, "mode": {"type": "string", "enum": ["loop", "pingpong", "random"]},
             "from": frame, "to": frame, "frames": {"type": "integer"}, "by": {"type": "integer"}, "name": {"type": "string"}, "clear": {"type": "boolean"}}, "required": ["action"]}},
         {"name": "frame_remove", "title": "Remove frame", "description": "Remove a layer's cell at a frame (later cells move left), or hold its drawing one frame less.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "kind": {"type": "string", "enum": ["cell", "hold"]}}}, "annotations": {"destructiveHint": true}},
@@ -2040,6 +2089,18 @@ mod tests {
         assert_eq!(s.doc.frames, frames + 2);
         ok(&mut s, "undo", json!({}));
         assert_eq!(s.doc.frames, frames);
+        // layers in time: shift, slide, split; several layers at once
+        let n = s.doc.layers.len();
+        ok(&mut s, "timing", json!({"action": "shift", "layer": 0, "by": 2}));
+        assert_eq!(s.doc.keys(0)[0].0, 2);
+        ok(&mut s, "timing", json!({"action": "shift", "layers": [0], "by": -2}));
+        ok(&mut s, "timing", json!({"action": "slide", "layer": 0, "by": 1}));
+        assert_eq!(s.doc.keys(0)[1].0, 3);
+        ok(&mut s, "timing", json!({"action": "split", "layer": 0, "from": 3}));
+        assert_eq!((s.doc.layers.len(), s.doc.layers[0].end), (n + 1, Some(2)));
+        ok(&mut s, "layer_merge", json!({"what": "selected", "layers": [0, 1]}));
+        assert_eq!(s.doc.layers.len(), n);
+        assert_eq!(s.doc.keys(0)[1].0, 3, "the two halves are one layer again");
         ok(&mut s, "camera", json!({"lock_x": true, "keys": [{"frame": 0, "x": 5, "y": 6}]}));
         assert!(s.doc.camera.lock_x && (s.doc.camera.keys[0].x - 32.0).abs() < 0.01);
         ok(&mut s, "palette", json!({"action": "set", "colors": ["#102030", [1, 2, 3]]}));

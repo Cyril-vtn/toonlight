@@ -91,6 +91,9 @@ pub struct Layer {
     /// drawing in the timeline, to tell keys, breakdowns and in-betweens apart.
     #[serde(default)]
     pub marks: std::collections::BTreeMap<usize, u8>,
+    /// Selected together with the current layer, for actions on several layers (not saved).
+    #[serde(skip)]
+    pub selected: bool,
 }
 
 impl Layer {
@@ -113,6 +116,7 @@ impl Layer {
             names: Default::default(),
             fx: vec![],
             marks: Default::default(),
+            selected: false,
         }
     }
 }
@@ -1154,6 +1158,7 @@ impl Doc {
         }
         l.names = names;
         l.marks = marks;
+        l.selected = false;
         l.name = crate::i18n::trf("{} copie", &[&l.name]);
         let at = self.current_layer + 1;
         self.layers.insert(at, l);
@@ -1402,6 +1407,7 @@ impl Doc {
         l.names = l.names.iter().filter_map(|(id, n)| map.get(id).map(|m| (*m, n.clone()))).collect();
         l.marks = l.marks.iter().filter_map(|(id, k)| map.get(id).map(|m| (*m, *k))).collect();
         l.locked = false;
+        l.selected = false;
         let at = (self.current_layer + 1).min(self.layers.len());
         self.layers.insert(at, l);
         self.current_layer = at;
@@ -1411,6 +1417,207 @@ impl Doc {
             l.cels.resize(n, None);
         }
         self.dirty = true;
+    }
+
+    /// The layers an action applies to: the current layer and every layer selected with it,
+    /// from the bottom up.
+    pub fn target_layers(&self) -> Vec<usize> {
+        (0..self.layers.len())
+            .filter(|&i| i == self.current_layer || self.layers[i].selected)
+            .collect()
+    }
+
+    /// Make a layer the current one. When it is one of the chosen layers, they all stay chosen;
+    /// otherwise the choice is dropped.
+    pub fn focus_layer(&mut self, li: usize) {
+        if li == self.current_layer || li >= self.layers.len() {
+            return;
+        }
+        if self.layers[li].selected {
+            let old = self.current_layer;
+            self.layers[old].selected = true;
+        } else {
+            self.select_layers(false);
+        }
+        self.current_layer = li;
+    }
+
+    /// Select every layer, or none (the current layer always counts as chosen).
+    pub fn select_layers(&mut self, on: bool) {
+        for l in &mut self.layers {
+            l.selected = on;
+        }
+    }
+
+    /// First frame and last frame of a layer's own animation: from its first drawing to its end
+    /// (the project's end when it has none). None for a layer without drawings.
+    pub fn layer_span(&self, li: usize) -> Option<(usize, usize)> {
+        let l = &self.layers[li];
+        let start = l.cels.iter().position(|c| c.is_some())?;
+        Some((start, l.end.unwrap_or(self.frames - 1).min(self.frames - 1).max(start)))
+    }
+
+    /// Move the whole animation of `layers` in time: `by` frames later (+) or earlier (−). A
+    /// move earlier stops when a layer's first drawing reaches the first frame, so no drawing is
+    /// lost; the project gets longer when a drawing would pass its end. Returns the frames
+    /// really moved (0 when nothing can move or a layer is locked).
+    pub fn shift_layers(&mut self, layers: &[usize], by: i64) -> i64 {
+        let spans: Vec<(usize, usize)> = layers.iter().filter_map(|&li| self.layer_span(li).map(|s| (li, s.0))).collect();
+        if spans.is_empty() || by == 0 || layers.iter().any(|&li| self.layers[li].locked) {
+            return 0;
+        }
+        // the same move for every layer, so they stay in step
+        let room = spans.iter().map(|s| s.1).min().unwrap_or(0) as i64;
+        let by = by.max(-room);
+        if by == 0 {
+            return 0;
+        }
+        self.push_structure_undo();
+        let n = by.unsigned_abs() as usize;
+        for &(li, _) in &spans {
+            let last_key = self.layers[li].cels.iter().rposition(|c| c.is_some()).unwrap_or(0);
+            let l = &mut self.layers[li];
+            if by > 0 {
+                l.cels.splice(0..0, std::iter::repeat_n(None, n));
+                l.end = l.end.map(|e| e + n);
+                // holds pushed past the project's end are dropped; drawings (and the layer's end) are kept
+                let keep = l.end.unwrap_or(0).max(last_key + n) + 1;
+                l.cels.truncate(keep.max(self.frames));
+            } else {
+                l.cels.drain(0..n);
+                l.cels.extend(std::iter::repeat_n(None, n));
+                l.end = l.end.map(|e| e.saturating_sub(n));
+            }
+        }
+        self.pad_all();
+        self.dirty = true;
+        by
+    }
+
+    /// Slide a layer's drawings inside its own frames, `by` frames later (+) or earlier (−): the
+    /// layer still starts and ends on the same frames. Later, the first drawing is held longer
+    /// and what passes the end is cut; earlier, the first frames are cut and the last drawing is
+    /// held longer. Returns false when there is nothing to slide or the layer is locked.
+    pub fn slide_layer(&mut self, li: usize, by: i64) -> bool {
+        let Some((start, end)) = self.layer_span(li) else { return false };
+        let len = end - start + 1;
+        let n = (by.unsigned_abs() as usize).min(len - 1);
+        if self.layers[li].locked || n == 0 {
+            return false;
+        }
+        self.push_structure_undo();
+        let mut window: Vec<Option<usize>> = self.layers[li].cels[start..=end].to_vec();
+        if by > 0 {
+            window.splice(1..1, std::iter::repeat_n(None, n));
+            window.truncate(len);
+        } else {
+            // what the layer showed `n` frames later now shows at its first frame
+            let first = self.drawing_at(li, start + n);
+            window.drain(0..n);
+            window[0] = first;
+            window.extend(std::iter::repeat_n(None, n));
+        }
+        self.layers[li].cels.splice(start..=end, window);
+        self.dirty = true;
+        true
+    }
+
+    /// Split a layer in two at frame `at`: the layer keeps what comes before, and a new layer
+    /// above it takes the frames from `at` on (starting with the drawing shown there). Returns
+    /// false when `at` is not inside the layer's animation or the layer is locked.
+    pub fn split_layer(&mut self, li: usize, at: usize) -> bool {
+        let Some((start, end)) = self.layer_span(li) else { return false };
+        if self.layers[li].locked || at <= start || at > end {
+            return false;
+        }
+        let Some(shown) = self.drawing_at(li, at) else { return false };
+        self.push_structure_undo();
+        let old = self.layers[li].clone();
+        let before: std::collections::HashSet<usize> = old.cels[..at].iter().flatten().copied().collect();
+        // the second part gets its own copy of any drawing the first part still shows
+        let mut copies: std::collections::HashMap<usize, usize> = Default::default();
+        let mut second = Layer::new(format!("{} (2)", old.name), vec![None; old.cels.len()]);
+        let mut tail: Vec<(usize, usize)> = vec![(at, shown)];
+        tail.extend((at + 1..old.cels.len()).filter_map(|f| old.cels[f].map(|id| (f, id))));
+        for (f, id) in tail {
+            let new = if before.contains(&id) {
+                *copies.entry(id).or_insert_with(|| {
+                    let d = self.drawings[id].clone();
+                    self.drawings.push(d);
+                    self.drawings.len() - 1
+                })
+            } else {
+                id
+            };
+            second.cels[f] = Some(new);
+            if let Some(n) = old.names.get(&id) {
+                second.names.insert(new, n.clone());
+            }
+            if let Some(m) = old.marks.get(&id) {
+                second.marks.insert(new, *m);
+            }
+        }
+        second.visible = old.visible;
+        second.opacity = old.opacity;
+        second.onion = old.onion;
+        second.blend = old.blend;
+        second.group = old.group;
+        second.stencil = old.stencil;
+        second.fx = old.fx.clone();
+        // the second part takes over at `at`: nothing of it before, the old ending after
+        second.pre = Behavior::None;
+        second.post = old.post;
+        second.end = old.end;
+        let first = &mut self.layers[li];
+        for c in first.cels[at..].iter_mut() {
+            *c = None;
+        }
+        first.end = Some(at - 1);
+        first.post = Behavior::None;
+        self.layers.insert(li + 1, second);
+        self.current_layer = li + 1;
+        self.dirty = true;
+        true
+    }
+
+    /// Remove `layers` (at least one layer always stays). Returns how many were removed.
+    pub fn delete_layers(&mut self, layers: &[usize]) -> usize {
+        let mut gone: Vec<usize> = layers.iter().copied().filter(|&i| i < self.layers.len()).collect();
+        gone.sort_unstable();
+        gone.dedup();
+        if gone.len() >= self.layers.len() {
+            gone.remove(0);
+        }
+        if gone.is_empty() {
+            return 0;
+        }
+        self.push_structure_undo();
+        for &i in gone.iter().rev() {
+            self.layers.remove(i);
+        }
+        let below = gone.iter().filter(|&&i| i < self.current_layer).count();
+        self.current_layer = (self.current_layer - below).min(self.layers.len() - 1);
+        self.dirty = true;
+        gone.len()
+    }
+
+    /// Merge `layers` into the lowest of them ("merge selected"); the other layers stay as they
+    /// are. Returns false with fewer than two layers or a locked one.
+    pub fn merge_layers(&mut self, layers: &[usize], opts: MergeOptions) -> bool {
+        let mut sel: Vec<usize> = layers.iter().copied().filter(|&i| i < self.layers.len()).collect();
+        sel.sort_unstable();
+        sel.dedup();
+        if sel.len() < 2 || sel.iter().any(|&i| self.layers[i].locked) {
+            return false;
+        }
+        self.push_structure_undo();
+        // from the top down: each merge removes the upper layer, which is above everything left to merge
+        for k in (1..sel.len()).rev() {
+            self.merge_into(sel[k], sel[k - 1], opts);
+        }
+        self.current_layer = sel[0];
+        self.layers[sel[0]].selected = false;
+        true
     }
 
     /// Stretch (or shrink) a layer's animation to `new_len` frames: every drawing starts at the
@@ -2407,6 +2614,91 @@ mod tests {
         assert_eq!(timecode(13, 12.5), "1:00", "the first whole frame of the second second at 12.5 fps");
         assert!(d.undo());
         assert_eq!(d.frames, frames);
+    }
+
+    #[test]
+    fn shifting_sliding_and_splitting_layers() {
+        let keys = |d: &Doc, li: usize| d.keys(li).iter().map(|k| k.0).collect::<Vec<_>>();
+        let mut d = doc4(); // drawings at 0, 1, 2, 3 of 8 frames
+        assert_eq!(d.shift_layers(&[0], 2), 2);
+        assert_eq!(keys(&d, 0), vec![2, 3, 4, 5]);
+        assert_eq!(d.frames, 8, "the holds at the end make room");
+        assert_eq!(d.shift_layers(&[0], 5), 5);
+        assert_eq!(
+            (keys(&d, 0), d.frames),
+            (vec![7, 8, 9, 10], 11),
+            "the project gets longer to keep the drawings"
+        );
+        assert_eq!(d.shift_layers(&[0], -100), -7, "earlier stops at the first frame");
+        assert_eq!(keys(&d, 0), vec![0, 1, 2, 3]);
+        assert_eq!(d.shift_layers(&[0], -1), 0);
+        d.layers[0].end = Some(5);
+        d.shift_layers(&[0], 1);
+        assert_eq!(d.layers[0].end, Some(6), "the layer's end moves with it");
+        // two layers move together, by what the tightest one allows
+        let mut d = doc4();
+        d.add_layer(); // its drawing is at frame 0
+        d.shift_layers(&[0, 1], 3);
+        assert_eq!(d.shift_layers(&[0, 1], -5), -3);
+        assert_eq!((keys(&d, 0)[0], keys(&d, 1)[0]), (0, 0));
+        // slide: the content moves inside the same frames
+        let mut d = doc4();
+        d.layers[0].end = Some(5);
+        let ids: Vec<usize> = d.keys(0).iter().map(|k| k.1).collect();
+        assert!(d.slide_layer(0, 1));
+        assert_eq!(keys(&d, 0), vec![0, 2, 3, 4]);
+        assert_eq!(d.layers[0].end, Some(5));
+        assert!(d.slide_layer(0, -2));
+        assert_eq!(d.drawing_at(0, 0), Some(ids[1]), "what showed two frames later is now first");
+        assert_eq!(keys(&d, 0), vec![0, 1, 2]);
+        assert_eq!(d.drawing_at(0, 5), Some(ids[3]), "the last drawing is held to the end");
+        assert!(!d.slide_layer(0, 0));
+        // split
+        let mut d = doc4();
+        let last = d.drawing_at(0, 3).unwrap();
+        d.layers[0].names.insert(last, "last".into());
+        assert!(!d.split_layer(0, 0), "nothing before the first drawing");
+        assert!(d.split_layer(0, 5), "splitting inside a hold");
+        assert_eq!(d.layers.len(), 2);
+        assert_eq!((d.layers[0].end, d.current_layer), (Some(4), 1));
+        assert_eq!(keys(&d, 1), vec![5]);
+        assert_ne!(
+            d.drawing_at(1, 5),
+            d.drawing_at(0, 4),
+            "the second part has its own copy of the held drawing"
+        );
+        assert_eq!(d.instance_name(1, 5).as_deref(), Some("last"));
+        assert_eq!(d.shown_drawing(0, 6), None, "the first part shows nothing after its end");
+        assert_eq!(d.shown_drawing(1, 2), None, "the second part shows nothing before the split");
+        assert!(d.undo());
+        assert_eq!(d.layers.len(), 1);
+        assert!(d.split_layer(0, 2), "splitting on a drawing moves it");
+        assert_eq!((keys(&d, 0), keys(&d, 1)), (vec![0, 1], vec![2, 3]));
+    }
+
+    #[test]
+    fn several_layers_at_once() {
+        let mut d = Doc::new(2, 1, 12.0);
+        d.drawings[d.layers[0].cels[0].unwrap()].px[0..4].copy_from_slice(&[255, 0, 0, 255]);
+        d.add_layer();
+        d.add_layer();
+        d.drawings[d.layers[2].cels[0].unwrap()].px[4..8].copy_from_slice(&[0, 0, 255, 255]);
+        d.add_layer();
+        assert_eq!(d.target_layers(), vec![3], "the current layer alone");
+        d.layers[0].selected = true;
+        d.current_layer = 2;
+        assert_eq!(d.target_layers(), vec![0, 2]);
+        assert!(d.merge_layers(&[0, 2], MergeOptions::default()));
+        assert_eq!((d.layers.len(), d.current_layer), (3, 0), "layers 1 and 3 are untouched");
+        let px = &d.drawings[d.drawing_at(0, 0).unwrap()].px;
+        assert_eq!(px, &vec![255, 0, 0, 255, 0, 0, 255, 255]);
+        assert!(!d.merge_layers(&[1], MergeOptions::default()));
+        d.select_layers(true);
+        let all = d.target_layers();
+        assert_eq!(d.delete_layers(&all), 2, "one layer always stays");
+        assert_eq!(d.layers.len(), 1);
+        assert!(d.undo());
+        assert_eq!(d.layers.len(), 3);
     }
 
     #[test]

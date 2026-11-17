@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Shift, slide and split layers** (Layer menu): shift moves a layer's whole animation in time
+  (never past the first frame, so no drawing is lost); slide moves the drawings inside the layer,
+  which keeps its start and end; split cuts the layer in two at the current frame (also in the
+  timeline's right-click menu).
+- **Several layers at once**: Ctrl / Cmd + click a layer's name to add it to the chosen layers,
+  Shift + click to choose up to it (Layer menu: choose every layer, keep only the current one;
+  Colour groups panel: choose a group's layers). Delete, shift, the colour group and the eye /
+  lock / light table / stencil icons then act on all of them; "Merge the chosen layers" merges
+  them into the lowest one.
+- AI (MCP): `timing` takes `shift`, `slide` and `split`; `layer_merge` takes `what: selected`
+  with `layers`; `layer_delete` takes `layers`; `color_group` takes `select` / `deselect`.
 - **Timeline zoom**: − / + and a slider at the right of the timeline, Ctrl + wheel (or a pinch)
   over it, and "Fit" (the whole shot, the selected cells, the sound, normal size). The zoom is
   kept per room. The ruler shows frame numbers or timecode (seconds:frames). The timeline no

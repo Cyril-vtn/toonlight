@@ -7,13 +7,12 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **52** done, **21** partial, **76** missing.
+Today: **53** done, **21** partial, **76** missing.
 
 ## Next (P1)
 
 1. Drawing: tablet pressure on macOS, pen tilt.
-2. Layers: shift / slide / split, selecting several layers.
-3. Sound: several sound tracks, sound across shots in the film export.
+2. Sound: several sound tracks, sound across shots in the film export.
 
 ---
 
@@ -74,7 +73,8 @@ Today: **52** done, **21** partial, **76** missing.
 | Blending modes | 🟡 | P2 |
 | Colour groups (13, panel, protect, show / hide / lock a group, timeline filter) | ✅ | — |
 | Colour group editor (rename, reset, save / load) | ❌ | P3 |
-| Merge below / merge visible / merge selected / join selected | 🟡 | P2 |
+| Merge below / merge visible / merge selected (done) / join selected | 🟡 | P2 |
+| Selecting several layers (Ctrl / Shift + click, by colour group) and acting on them together | ✅ | — |
 | Cut / copy / paste layers (with their frames) | ✅ | — |
 | Position lock | ❌ | P3 |
 | Pre / post behaviours (none, repeat, ping-pong, hold) | ✅ | — |
@@ -82,7 +82,7 @@ Today: **52** done, **21** partial, **76** missing.
 | New-layer presets (Anim, Background, Colo & Texture, Duplicate structure) | ❌ | P2 |
 | Background mode (none, colour, checker) per layer | ❌ | P3 |
 | Layer marks, collapse, thumbnails, icon size | ❌ | P3 |
-| Resize / stretch / shift / time ratio / retime / slide / split a layer | 🟡 | P2 |
+| Stretch / shift / slide / split a layer (done); resize, time ratio, retime | 🟡 | P2 |
 | Pick layer under the cursor | ❌ | P3 |
 
 ## 4. Timeline, exposures and instances
@@ -215,7 +215,7 @@ Each layer has an **effect stack** (several effects in a row, shown live, animat
 | AVI, FLI/FLC, MOV / other codecs through FFmpeg settings | ❌ | P2 |
 | Sprite sheet generator | ❌ | P2 |
 | CSV / XML timesheet export | ❌ | P2 |
-| TVPX package (share brushes / panels / tools) | ❌ | P3 |
+| Package file to share brushes / panels / tools | ❌ | P3 |
 | Print | ❌ | P3 |
 | Clipboard image copy / paste with other programs | ✅ | — |
 | Open project files of other animation programs | ❌ | P3 |

@@ -293,8 +293,9 @@ pub struct AnimApp {
     group_protect: [bool; 13],
     /// Groups whose layers the timeline shows (reference +0xa0, all on).
     group_in_timeline: [bool; 13],
-    /// The length "Stretch layer" gives.
+    /// The length "Stretch layer" gives, and the frames "Shift" and "Slide" move by.
     stretch_len: usize,
+    shift_n: i64,
     /// AI commands arriving from `toonlight --mcp` (the bridge), and the tool state kept between them.
     bridge: Option<crate::mcp::BridgeRequests>,
     bridge_srv: Option<crate::mcp::Server>,
@@ -442,6 +443,7 @@ impl AnimApp {
             group_protect: [false; 13],
             group_in_timeline: [true; 13],
             stretch_len: 24,
+            shift_n: 1,
             show_fx_stack: false,
             bridge: None,
             bridge_srv: None,
@@ -805,6 +807,58 @@ impl AnimApp {
             Some(t) => self.doc.frame = t,
             None => self.status = tr("Pas d'autre image marquée de ce côté sur ce calque.").into(),
         }
+    }
+
+    /// Delete the current layer and the layers chosen with it.
+    fn delete_layers(&mut self) {
+        self.commit_floating();
+        let targets = self.doc.target_layers();
+        if self.doc.delete_layers(&targets) == 0 {
+            self.status = tr("Le dernier calque ne peut pas être supprimé.").into();
+        }
+        self.needs_full = true;
+    }
+
+    /// Move the current layer (and the layers chosen with it) in time.
+    fn shift_layers(&mut self, by: i64) {
+        let targets = self.doc.target_layers();
+        let moved = self.doc.shift_layers(&targets, by);
+        if moved == 0 {
+            self.status = tr("Impossible de décaler : calque verrouillé, vide, ou déjà au début.").into();
+        } else {
+            self.status = trf("Calque décalé de {} images.", &[&moved]);
+            self.needs_full = true;
+        }
+    }
+
+    fn slide_layer(&mut self, by: i64) {
+        let l = self.doc.current_layer;
+        if self.doc.slide_layer(l, by) {
+            self.needs_full = true;
+        } else {
+            self.status = tr("Rien à faire glisser sur ce calque (ou calque verrouillé).").into();
+        }
+    }
+
+    /// Split the current layer in two at a frame.
+    fn split_layer(&mut self, at: usize) {
+        self.commit_floating();
+        let l = self.doc.current_layer;
+        if self.doc.split_layer(l, at) {
+            self.cell_sel = None;
+            self.needs_full = true;
+        } else {
+            self.status = tr("Placez-vous après le premier dessin du calque, avant sa fin, pour le scinder.").into();
+        }
+    }
+
+    fn merge_selected(&mut self) {
+        self.commit_floating();
+        let targets = self.doc.target_layers();
+        if !self.doc.merge_layers(&targets, crate::doc::MergeOptions::default()) {
+            self.status = tr("Choisissez au moins deux calques non verrouillés (Ctrl + clic sur leur nom).").into();
+        }
+        self.needs_full = true;
     }
 
     fn insert_tweens(&mut self) {
@@ -1886,8 +1940,7 @@ impl AnimApp {
                         ui.close_menu();
                     }
                     if ui.button(tr("Supprimer le calque")).clicked() {
-                        self.doc.delete_layer();
-                        self.needs_full = true;
+                        self.delete_layers();
                         ui.close_menu();
                     }
                     if ui.button(tr("Monter le calque")).clicked() {
@@ -1934,6 +1987,40 @@ impl AnimApp {
                             ui.close_menu();
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.add(egui::DragValue::new(&mut self.shift_n).range(-100000..=100000))
+                            .on_hover_text(tr("Nombre d'images : positif = plus tard, négatif = plus tôt"));
+                        if ui
+                            .button(tr("Décaler le calque"))
+                            .on_hover_text(tr(
+                                "Déplace toute l'animation du calque (et des calques choisis avec lui) dans le temps.",
+                            ))
+                            .clicked()
+                        {
+                            self.shift_layers(self.shift_n);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .button(tr("Faire glisser le contenu"))
+                            .on_hover_text(tr(
+                                "Les dessins se déplacent à l'intérieur du calque, qui garde son début et sa fin.",
+                            ))
+                            .clicked()
+                        {
+                            self.slide_layer(self.shift_n);
+                            ui.close_menu();
+                        }
+                    });
+                    if ui
+                        .button(tr("Scinder le calque ici"))
+                        .on_hover_text(tr(
+                            "Coupe le calque en deux à l'image courante : la suite va dans un nouveau calque au-dessus.",
+                        ))
+                        .clicked()
+                    {
+                        self.split_layer(self.doc.frame);
+                        ui.close_menu();
+                    }
                     ui.separator();
                     if ui.button(tr("Fusionner avec le calque du dessous")).clicked() {
                         self.merge(false);
@@ -1941,6 +2028,31 @@ impl AnimApp {
                     }
                     if ui.button(tr("Fusionner les calques visibles")).clicked() {
                         self.merge(true);
+                        ui.close_menu();
+                    }
+                    if ui
+                        .add_enabled(
+                            self.doc.target_layers().len() > 1,
+                            egui::Button::new(tr("Fusionner les calques choisis")),
+                        )
+                        .clicked()
+                    {
+                        self.merge_selected();
+                        ui.close_menu();
+                    }
+                    ui.separator();
+                    if ui
+                        .button(tr("Choisir tous les calques"))
+                        .on_hover_text(tr(
+                            "Ctrl + clic sur le nom d'un calque l'ajoute au choix, Maj + clic choisit jusqu'à lui.",
+                        ))
+                        .clicked()
+                    {
+                        self.doc.select_layers(true);
+                        ui.close_menu();
+                    }
+                    if ui.button(tr("Ne garder que le calque courant")).clicked() {
+                        self.doc.select_layers(false);
                         ui.close_menu();
                     }
                     ui.separator();
@@ -2925,6 +3037,28 @@ impl AnimApp {
                 }
                 ui.checkbox(&mut self.group_in_timeline[g], tr("Ce groupe dans la timeline"));
                 ui.separator();
+                // actions 10 and 11: choose the group's layers, or add them to the chosen ones
+                if ui
+                    .add_enabled(!members.is_empty(), egui::Button::new(tr("Choisir les calques du groupe")))
+                    .clicked()
+                {
+                    self.doc.select_layers(false);
+                    for &l in &members {
+                        self.doc.layers[l].selected = true;
+                    }
+                    self.doc.current_layer = *members.last().unwrap_or(&cl);
+                    ui.close_menu();
+                }
+                if ui
+                    .add_enabled(!members.is_empty(), egui::Button::new(tr("Ajouter ses calques au choix")))
+                    .clicked()
+                {
+                    for &l in &members {
+                        self.doc.layers[l].selected = true;
+                    }
+                    ui.close_menu();
+                }
+                ui.separator();
                 if ui.button(tr("Verrouiller les calques du groupe")).clicked() {
                     for &l in &members {
                         self.doc.layers[l].locked = true;
@@ -3443,8 +3577,7 @@ impl AnimApp {
                     self.needs_full = true;
                 }
                 if act(ui, tr("Supprimer le calque"), tr("Retire le calque courant")) {
-                    self.doc.delete_layer();
-                    self.needs_full = true;
+                    self.delete_layers();
                 }
                 if act(ui, tr("Monter"), tr("Monter le calque")) {
                     self.doc.move_layer(true);
@@ -3491,7 +3624,10 @@ impl AnimApp {
                                     .rect_stroke(r, 3.0, Line::new(2.0_f32, Color32::WHITE), StrokeKind::Inside);
                             }
                             if resp.clicked() {
-                                self.doc.layers[cl].group = g;
+                                // the current layer and the layers chosen with it
+                                for l in self.doc.target_layers() {
+                                    self.doc.layers[l].group = g;
+                                }
                                 ui.close_menu();
                             }
                         }
@@ -3626,7 +3762,14 @@ impl AnimApp {
             let cur = li == self.doc.current_layer;
             let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(COL, ROW - 1.0));
             let p = painter.with_clip_rect(col_clip);
-            p.rect_filled(rowrect, 0.0, if cur { th.selected } else { th.panel });
+            let row_col = if cur {
+                th.selected
+            } else if layer.selected {
+                lerp_color(th.panel, th.selected, 0.5)
+            } else {
+                th.panel
+            };
+            p.rect_filled(rowrect, 0.0, row_col);
             p.rect_filled(
                 egui::Rect::from_min_size(rowrect.min, vec2(3.0, rowrect.height())),
                 0.0,
@@ -3988,7 +4131,7 @@ impl AnimApp {
                 if p.y >= area.top() + top {
                     let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
                     if r < nl {
-                        self.doc.current_layer = rows[r];
+                        self.doc.focus_layer(rows[r]);
                     }
                 }
             }
@@ -4043,6 +4186,10 @@ impl AnimApp {
                 self.needs_full = true;
                 ui.close_menu();
             }
+            if ui.button(tr("Scinder le calque ici")).clicked() {
+                self.split_layer(f);
+                ui.close_menu();
+            }
         });
         if let Some(p) = resp.interact_pointer_pos() {
             let pressed = (resp.clicked() || resp.drag_started() || resp.dragged()) && !resp.secondary_clicked();
@@ -4056,7 +4203,7 @@ impl AnimApp {
                     if self.cell_sel.map(|s| s.0) != Some(li) {
                         self.cell_anchor = if li == self.doc.current_layer { self.doc.frame } else { frame };
                     }
-                    self.doc.current_layer = li;
+                    self.doc.focus_layer(li);
                     let a = self.cell_anchor.min(frame);
                     let b = self.cell_anchor.max(frame);
                     self.cell_sel = Some((li, a, b));
@@ -4076,21 +4223,47 @@ impl AnimApp {
                     if r < nl {
                         let li = rows[r];
                         if in_cells {
-                            self.doc.current_layer = li;
+                            self.doc.focus_layer(li);
                             self.doc.frame = frame;
                         } else if resp.clicked() {
                             let ix = ((p.x - area.left() - 4.0) / 24.0).floor() as i32;
                             let iy = p.y - row_y(r);
+                            let (cmd, shift) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
                             if (0..4).contains(&ix) && (5.0..25.0).contains(&iy) {
-                                let l = &mut self.doc.layers[li];
-                                match ix {
-                                    0 => l.visible = !l.visible,
-                                    1 => l.locked = !l.locked,
-                                    2 => l.onion = !l.onion,
-                                    _ => l.stencil = !l.stencil,
+                                // an icon of one of the chosen layers changes them all
+                                let targets = self.doc.target_layers();
+                                let group = if targets.contains(&li) { targets } else { vec![li] };
+                                let l = &self.doc.layers[li];
+                                let on = match ix {
+                                    0 => !l.visible,
+                                    1 => !l.locked,
+                                    2 => !l.onion,
+                                    _ => !l.stencil,
+                                };
+                                for i in group {
+                                    let l = &mut self.doc.layers[i];
+                                    match ix {
+                                        0 => l.visible = on,
+                                        1 => l.locked = on,
+                                        2 => l.onion = on,
+                                        _ => l.stencil = on,
+                                    }
                                 }
                                 self.needs_full = true;
+                            } else if cmd {
+                                // Ctrl / Cmd + click: add the layer to the chosen ones, or take it out
+                                if li != self.doc.current_layer {
+                                    let l = &mut self.doc.layers[li];
+                                    l.selected = !l.selected;
+                                }
+                            } else if shift {
+                                // Shift + click: every layer from the current one to this one
+                                let cur = self.doc.current_layer;
+                                for l in &mut self.doc.layers[li.min(cur)..=li.max(cur)] {
+                                    l.selected = true;
+                                }
                             } else {
+                                self.doc.select_layers(false);
                                 self.doc.current_layer = li;
                             }
                         }
@@ -6118,10 +6291,19 @@ impl AnimApp {
             self.step_frame(1);
         }
         if go(A::LayerUp) && self.doc.current_layer + 1 < self.doc.layers.len() {
-            self.doc.current_layer += 1;
+            self.doc.focus_layer(self.doc.current_layer + 1);
         }
         if go(A::LayerDown) && self.doc.current_layer > 0 {
-            self.doc.current_layer -= 1;
+            self.doc.focus_layer(self.doc.current_layer - 1);
+        }
+        if go(A::ShiftLayerLater) {
+            self.shift_layers(1);
+        }
+        if go(A::ShiftLayerEarlier) {
+            self.shift_layers(-1);
+        }
+        if go(A::SplitLayer) {
+            self.split_layer(self.doc.frame);
         }
         let (flip_prev, flip_next) = ctx.input(|i| (km.down(i, A::FlipPrev), km.down(i, A::FlipNext)));
         if flip_prev || flip_next {

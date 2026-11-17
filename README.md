@@ -35,7 +35,8 @@ Installers for every stable version are on the
 - **Custom brushes** from a selection or a picture, and **tool presets**.
 - **Selections**: rectangle, lasso, magic wand; copy, cut, paste; move, scale, rotate, mirror.
 - **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups,
-  before / after behaviours (none, repeat, ping-pong, hold).
+  before / after behaviours (none, repeat, ping-pong, hold); merge, stretch, shift, slide and
+  split in time; several layers chosen at once (Ctrl / Shift + click).
 - **Timeline**: cells and holds, several cells at once (move, copy, paste), exposures by a
   number, set exposure, drawing names, coloured image marks (keys, breakdowns, in-betweens),
   in-between drawings inserted between two drawings, notes, bookmarks, mark in / out, zoom,

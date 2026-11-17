@@ -67,6 +67,9 @@ pub enum Action {
     NextMark,
     PrevMark,
     InsertTweens,
+    ShiftLayerLater,
+    ShiftLayerEarlier,
+    SplitLayer,
     Tool(Tool),
 }
 
@@ -130,6 +133,9 @@ pub fn all_actions() -> Vec<Action> {
         NextMark,
         PrevMark,
         InsertTweens,
+        ShiftLayerLater,
+        ShiftLayerEarlier,
+        SplitLayer,
     ];
     v.extend(ALL_TOOLS.iter().map(|t| Tool(*t)));
     v
@@ -197,6 +203,9 @@ impl Action {
             NextMark => "image_mark_next".into(),
             PrevMark => "image_mark_previous".into(),
             InsertTweens => "insert_tweens".into(),
+            ShiftLayerLater => "layer_shift_later".into(),
+            ShiftLayerEarlier => "layer_shift_earlier".into(),
+            SplitLayer => "layer_split".into(),
             Tool(t) => format!("tool_{}", format!("{t:?}").to_lowercase()),
         }
     }
@@ -266,6 +275,9 @@ impl Action {
             NextMark => tr("Image marquée suivante").into(),
             PrevMark => tr("Image marquée précédente").into(),
             InsertTweens => tr("Insérer des intervalles").into(),
+            ShiftLayerLater => tr("Décaler le calque d'une image plus tard").into(),
+            ShiftLayerEarlier => tr("Décaler le calque d'une image plus tôt").into(),
+            SplitLayer => tr("Scinder le calque ici").into(),
             Tool(t) => crate::i18n::trf("Outil : {}", &[&t.label()]),
         }
     }
@@ -583,6 +595,9 @@ impl Default for KeyMap {
             NextMark,
             PrevMark,
             InsertTweens,
+            ShiftLayerLater,
+            ShiftLayerEarlier,
+            SplitLayer,
         ] {
             set(a, vec![]);
         }
