@@ -12,7 +12,10 @@ rust-version = "1.85"
 build = "build.rs"
 
 [dependencies]
-eframe = { version = "=0.31.1", default-features = false, features = ["default_fonts", "glow", "accesskit", "x11", "wayland"] }
+# No "accesskit" feature on purpose: with this version, the accessibility tree stops the app on
+# Windows as soon as a program reads the screen while a panel moves (see CHANGELOG, 0.16.0-beta.2).
+# Turn it back on with a newer eframe, and keep CI's "screen reader" walk green.
+eframe = { version = "=0.31.1", default-features = false, features = ["default_fonts", "glow", "x11", "wayland"] }
 winit = "0.30"
 image = { version = "0.25", default-features = false, features = ["png", "gif", "jpeg", "tiff", "tga", "bmp"] }
 rfd = "0.18"

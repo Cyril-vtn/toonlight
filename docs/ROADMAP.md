@@ -7,7 +7,7 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **65** done, **15** partial, **70** missing.
+Today: **65** done, **15** partial, **71** missing.
 
 ## Next (P1)
 
@@ -241,5 +241,6 @@ Each layer has an **effect stack** (several effects in a row, shown live, animat
 | Shortcuts for mouse / pen buttons, right mouse button tool | ❌ | P2 |
 | Preferences window (undo depth, memory, autosave, paths) | ✅ | — |
 | Autosave and crash recovery | ✅ | — |
+| Screen reader support (turned off: the interface library in use stops the app on Windows; back with a newer one) | ❌ | P3 |
 
 ---

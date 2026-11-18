@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Fix (Windows): the app closed without a word when a panel was moved** (the arrow that makes
+  a panel float, for example). The part of the interface library that describes the window to
+  screen readers stopped the app when a panel changed place while a program was reading the
+  screen, which many everyday Windows tools do. That part is turned off until a newer version
+  of the library can be used; screen readers can't read the interface meanwhile.
+- **Crash reports**: if the app ever stops on an internal error, the error is written to
+  `crash.log` in the settings folder, and the next start says where the report is.
+- For checks: `--script file` plays clicks, keys and actions on the real window. The automatic
+  checks now walk through the interface on Windows, macOS and Linux (panels, rooms, every
+  window, tools, a stroke), and on Windows also while a stand-in screen reader looks at it.
+
 ## [0.16.0-beta.1] — 2026-11-18 — first public test version
 
 The first version with installers for Windows, macOS and Linux. It is a **test version**: it has

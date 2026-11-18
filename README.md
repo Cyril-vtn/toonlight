@@ -86,6 +86,7 @@ Start options: `--lang en` (fr, en, es, de, zh, ja), `--shortcuts`, `--storyboar
 `--history`, `--tool camera` (the tool selected at start), `--screenshot shot.png` (draws about
 120 frames, saves a picture and quits),
 `--commands file` (runs AI commands, one JSON-RPC message per line, on the opened project),
+`--script file` (plays clicks, keys and actions on the window by itself, see `src/script.rs`),
 `--mcp` (AI server, no window), or a project file to open.
 
 Graphics tablets: on Windows the pen is read through Windows Ink (leave it on in the tablet's
