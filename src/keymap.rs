@@ -70,6 +70,10 @@ pub enum Action {
     ShiftLayerLater,
     ShiftLayerEarlier,
     SplitLayer,
+    CollapseLayer,
+    UndoMark,
+    UndoPrevMark,
+    UndoNextMark,
     Tool(Tool),
 }
 
@@ -136,6 +140,10 @@ pub fn all_actions() -> Vec<Action> {
         ShiftLayerLater,
         ShiftLayerEarlier,
         SplitLayer,
+        CollapseLayer,
+        UndoMark,
+        UndoPrevMark,
+        UndoNextMark,
     ];
     v.extend(ALL_TOOLS.iter().map(|t| Tool(*t)));
     v
@@ -206,6 +214,10 @@ impl Action {
             ShiftLayerLater => "layer_shift_later".into(),
             ShiftLayerEarlier => "layer_shift_earlier".into(),
             SplitLayer => "layer_split".into(),
+            CollapseLayer => "layer_collapse_toggle".into(),
+            UndoMark => "undo_mark_toggle".into(),
+            UndoPrevMark => "undo_mark_previous".into(),
+            UndoNextMark => "undo_mark_next".into(),
             Tool(t) => format!("tool_{}", format!("{t:?}").to_lowercase()),
         }
     }
@@ -278,6 +290,10 @@ impl Action {
             ShiftLayerLater => tr("Décaler le calque d'une image plus tard").into(),
             ShiftLayerEarlier => tr("Décaler le calque d'une image plus tôt").into(),
             SplitLayer => tr("Scinder le calque ici").into(),
+            CollapseLayer => tr("Replier / déplier le calque").into(),
+            UndoMark => tr("Marque d'annulation (poser / retirer)").into(),
+            UndoPrevMark => tr("Revenir à la marque d'annulation précédente").into(),
+            UndoNextMark => tr("Aller à la marque d'annulation suivante").into(),
             Tool(t) => crate::i18n::trf("Outil : {}", &[&t.label()]),
         }
     }
@@ -598,6 +614,10 @@ impl Default for KeyMap {
             ShiftLayerLater,
             ShiftLayerEarlier,
             SplitLayer,
+            CollapseLayer,
+            UndoMark,
+            UndoPrevMark,
+            UndoNextMark,
         ] {
             set(a, vec![]);
         }

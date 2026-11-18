@@ -6,6 +6,25 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Time ratio, retime and trim** (Layer menu): "Time ratio" stretches the layer — and the
+  layers chosen with it, in one undo step — by a percentage (200 % = twice slower, 50 % = twice
+  faster); "Retime the layer" gives every drawing the same exposure (on ones, on twos…); "Layer
+  start here" removes what the layer showed before the current frame (also in the timeline's
+  right-click menu).
+- **Collapsed layers, row sizes and layer thumbnails**: the small triangle at the right of a
+  layer's name folds it to a thin row in the timeline (with several layers chosen, all of them);
+  the timeline's new "Rows" menu sets small, medium or large rows, shows a small picture of each
+  layer's current drawing next to its name, and folds or unfolds every layer. Row size and
+  thumbnails are kept per room; folded layers are saved in the project.
+- **Undo marks** (Edit menu and the undo history window): mark the state the project is in, then
+  come back to the previous mark — or go forward to the next one — in one go, for example to
+  compare before and after a try. In the history window a flag next to each step sets or removes
+  its mark.
+- AI (MCP): `timing` `stretch` takes `ratio` (and `layers`), new actions `retime` and
+  `trim_start`; `layer_set` takes `collapsed`; `undo` takes `mark`, `to_mark` and `to_step`,
+  `redo` takes `to_mark`; `project_info` lists the `history` with its marks.
+- New start options `--history` (opens the undo history) and `--commands file` (runs a file of AI
+  commands on the opened project, to set up a state for a check).
 - **Colour group editor** (Colour groups panel > ☰ > Edit the groups…): rename groups 1-12 and
   change their colours (their layers follow), go back to the defaults, make the current groups
   the defaults for new projects, save them to a text file ("red green blue name" per line) or

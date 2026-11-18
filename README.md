@@ -37,12 +37,14 @@ Installers for every stable version are on the
 - **Selections**: rectangle, lasso, magic wand; copy, cut, paste; move, scale, rotate, mirror.
 - **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups
   you can rename and recolour, before / after behaviours (none, repeat, ping-pong, hold); merge,
-  stretch, shift, slide, split and join in time; several layers chosen at once (Ctrl / Shift +
-  click).
+  stretch (to a length or by a time ratio), retime, trim, shift, slide, split and join in time;
+  several layers chosen at once (Ctrl / Shift + click).
 - **Timeline**: cells and holds, several cells at once (move, copy, paste), exposures by a
   number, set exposure, drawing names, coloured image marks (keys, breakdowns, in-betweens),
   in-between drawings inserted between two drawings, notes, bookmarks, mark in / out, zoom,
-  frame numbers or timecode, exposure sheet.
+  frame numbers or timecode, exposure sheet; small, medium or large rows, layers folded to a
+  thin row, a small picture of each layer's drawing.
+- **Undo history** with marks: jump back to any step, or to a state you marked.
 - **Light table** (onion skin), **flipping**, **view rotation and mirror**.
 - **Animated camera**, **shots and storyboard**, **sound**: several tracks per shot with
   waveforms, volume, offset, fades and scrubbing, mixed into the MP4 and film exports.
@@ -76,8 +78,9 @@ sudo apt install libgtk-3-dev libxkbcommon-dev libasound2-dev libxcb-render0-dev
 ```
 
 Start options: `--lang en` (fr, en, es, de, zh, ja), `--shortcuts`, `--storyboard`, `--groups`,
-`--screenshot shot.png` (draws about 120 frames, saves a picture and quits), `--mcp` (AI server,
-no window), or a project file to open.
+`--history`, `--screenshot shot.png` (draws about 120 frames, saves a picture and quits),
+`--commands file` (runs AI commands, one JSON-RPC message per line, on the opened project),
+`--mcp` (AI server, no window), or a project file to open.
 
 Installers are made with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager):
 `cargo install cargo-packager --locked`, then `cargo packager --release` (see

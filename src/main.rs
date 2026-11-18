@@ -52,6 +52,16 @@ fn main() -> eframe::Result<()> {
             i += 1;
             continue;
         }
+        if args[i] == "--history" {
+            app::OPEN_HISTORY.store(true, std::sync::atomic::Ordering::Relaxed);
+            i += 1;
+            continue;
+        }
+        if args[i] == "--commands" && i + 1 < args.len() {
+            *app::START_COMMANDS.lock().unwrap() = Some(args[i + 1].clone().into());
+            i += 2;
+            continue;
+        }
         if args[i] == "--lang" && i + 1 < args.len() {
             if let Some(l) = i18n::Lang::from_code(&args[i + 1]) {
                 i18n::set_override(l);

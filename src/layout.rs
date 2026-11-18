@@ -91,6 +91,12 @@ pub struct Room {
     /// The timeline's zoom in this room: the width of a frame, in points.
     #[serde(default = "default_timeline_cell")]
     pub timeline_cell: f32,
+    /// Height of a layer's row in this room's timeline, in points (one of `TIMELINE_ROWS`).
+    #[serde(default = "default_timeline_row")]
+    pub timeline_row: f32,
+    /// A small picture of each layer's current image next to its name in the timeline.
+    #[serde(default)]
+    pub timeline_thumbs: bool,
     /// This room's keyboard shortcuts (`.cfg` text); the reference keeps one "Keyboard-" section
     /// per room and swaps it when the room changes. None = the shortcuts in use.
     #[serde(default)]
@@ -102,6 +108,13 @@ pub const TIMELINE_CELL: f32 = 24.0;
 
 fn default_timeline_cell() -> f32 {
     TIMELINE_CELL
+}
+
+/// Heights of a layer's row in the timeline: small, medium (the default) and large.
+pub const TIMELINE_ROWS: [f32; 3] = [24.0, 30.0, 48.0];
+
+fn default_timeline_row() -> f32 {
+    TIMELINE_ROWS[1]
 }
 
 /// Width of the reference's columns (`*-winw=185`).
@@ -131,6 +144,8 @@ impl Room {
             timeline_pinned: true,
             timeline_height: TIMELINE_HEIGHT,
             timeline_cell: TIMELINE_CELL,
+            timeline_row: TIMELINE_ROWS[1],
+            timeline_thumbs: false,
             keys: None,
         };
         match n {

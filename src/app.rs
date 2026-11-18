@@ -37,6 +37,11 @@ pub static OPEN_SHORTCUTS: std::sync::atomic::AtomicBool = std::sync::atomic::At
 
 /// Open the colour group editor at start (`--groups`, for checks).
 pub static OPEN_GROUPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Start option `--history`: open the undo history window.
+pub static OPEN_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Start option `--commands <file>`: AI commands (one JSON-RPC message per line) run on the
+/// project once it is open, to set up a state for a check or a screenshot.
+pub static START_COMMANDS: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 
 /// Open the storyboard window at start (`--storyboard`, for checks).
 pub static OPEN_STORYBOARD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
@@ -308,6 +313,14 @@ pub struct AnimApp {
     /// The length "Stretch layer" gives, and the frames "Shift" and "Slide" move by.
     stretch_len: usize,
     shift_n: i64,
+    /// The time ratio "Stretch" applies, in percent, and the exposure "Retime" gives each drawing.
+    stretch_pct: f32,
+    retime_n: usize,
+    /// The layers' small pictures in the timeline, by layer: what each was made from, and it.
+    thumbs: std::collections::HashMap<usize, (ThumbKey, egui::TextureHandle)>,
+    /// Counters that change when the picture does: any change, and paint on the current drawing.
+    full_stamp: u64,
+    paint_stamp: u64,
     /// AI commands arriving from `toonlight --mcp` (the bridge), and the tool state kept between them.
     bridge: Option<crate::mcp::BridgeRequests>,
     bridge_srv: Option<crate::mcp::Server>,
@@ -456,7 +469,7 @@ impl AnimApp {
             recovery_offer: None,
             export_board_pending: false,
             repeat_n: 1,
-            show_history: false,
+            show_history: OPEN_HISTORY.load(std::sync::atomic::Ordering::Relaxed),
             xs_edit: None,
             layer_clip: None,
             group_listed: [true; 13],
@@ -465,6 +478,11 @@ impl AnimApp {
             group_edit: None,
             stretch_len: 24,
             shift_n: 1,
+            stretch_pct: 200.0,
+            retime_n: 2,
+            thumbs: Default::default(),
+            full_stamp: 0,
+            paint_stamp: 0,
             show_fx_stack: false,
             bridge: None,
             bridge_srv: None,
@@ -481,6 +499,19 @@ impl AnimApp {
         };
         if let Some(p) = open {
             app.open_path(p);
+        }
+        if let Some(p) = START_COMMANDS.lock().unwrap().take() {
+            match std::fs::read_to_string(&p) {
+                Ok(text) => {
+                    let lines: Vec<String> = text.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect();
+                    for answer in app.run_commands(&lines) {
+                        if answer.contains("\"isError\":true") || answer.contains("\"error\"") {
+                            eprintln!("--commands: {answer}");
+                        }
+                    }
+                }
+                Err(e) => eprintln!("--commands: {}: {e}", p.display()),
+            }
         }
         if OPEN_GROUPS.load(std::sync::atomic::Ordering::Relaxed) {
             app.group_edit = Some(app.doc.groups.clone());
@@ -912,6 +943,90 @@ impl AnimApp {
         }
     }
 
+    /// Stretch the current layer and the layers chosen with it by the time ratio.
+    fn stretch_by_ratio(&mut self) {
+        self.commit_floating();
+        let targets = self.doc.target_layers();
+        let n = self.doc.stretch_layers_by(&targets, self.stretch_pct / 100.0);
+        if n == 0 {
+            self.status = tr("Rien à étirer sur ce calque.").into();
+        } else {
+            self.status = trf("{} calque(s) étiré(s) à {} %.", &[&n, &self.stretch_pct.round()]);
+            self.cell_sel = None;
+            self.needs_full = true;
+        }
+    }
+
+    /// Give every drawing of the current layer the same exposure.
+    fn retime_layer(&mut self) {
+        self.commit_floating();
+        let l = self.doc.current_layer;
+        match self.doc.retime_layer(l, self.retime_n) {
+            Some(last) => {
+                self.status = trf("Le calque finit maintenant à l'image {}.", &[&(last + 1)]);
+                self.cell_sel = None;
+                self.needs_full = true;
+            }
+            None => self.status = tr("Rien à recaler sur ce calque (ou calque verrouillé).").into(),
+        }
+    }
+
+    /// Make the current layer start at a frame.
+    fn trim_layer_start(&mut self, at: usize) {
+        self.commit_floating();
+        let l = self.doc.current_layer;
+        if self.doc.trim_layer_start(l, at) {
+            self.cell_sel = None;
+            self.needs_full = true;
+        } else {
+            self.status = tr("Placez-vous après le premier dessin du calque, avant sa fin, pour y mettre son début.").into();
+        }
+    }
+
+    /// Fold or unfold layers in the timeline: the current layer and the layers chosen with it
+    /// (`all` false, they follow the current layer), or every layer.
+    fn collapse_layers(&mut self, all: bool, on: Option<bool>) {
+        let on = on.unwrap_or(!self.doc.layers[self.doc.current_layer].collapsed);
+        let targets = if all {
+            (0..self.doc.layers.len()).collect()
+        } else {
+            self.doc.target_layers()
+        };
+        for l in targets {
+            self.doc.layers[l].collapsed = on;
+        }
+        self.doc.dirty = true;
+    }
+
+    /// Put an undo mark on the state the project is in, or remove it.
+    fn toggle_undo_mark(&mut self) {
+        let step = self.doc.history_step();
+        if step == 0 {
+            self.status = tr("Rien à marquer : l'historique est vide.").into();
+        } else if self.doc.toggle_undo_mark(step) {
+            self.status = tr("Marque d'annulation posée.").into();
+        } else {
+            self.status = tr("Marque d'annulation retirée.").into();
+        }
+    }
+
+    /// Go back to the previous undo mark, or forward to the next one.
+    fn go_undo_mark(&mut self, forward: bool) {
+        if self.stroke.is_some() {
+            return;
+        }
+        match self.doc.undo_mark_from_here(forward) {
+            Some(step) => {
+                self.cancel_floating();
+                self.doc.go_to_step(step);
+                self.needs_full = true;
+                self.status = trf("Projet remis à la marque de l'étape {}.", &[&step]);
+            }
+            None if forward => self.status = tr("Pas de marque d'annulation après cet état.").into(),
+            None => self.status = tr("Pas de marque d'annulation avant cet état.").into(),
+        }
+    }
+
     /// Put the chosen layers end to end in one layer.
     fn join_selected(&mut self) {
         self.commit_floating();
@@ -1296,6 +1411,17 @@ impl AnimApp {
         if requests.is_empty() {
             return;
         }
+        let lines: Vec<String> = requests.iter().map(|r| r.0.clone()).collect();
+        let answers = self.run_commands(&lines);
+        for ((_, reply), answer) in requests.into_iter().zip(answers) {
+            let _ = reply.send(answer);
+        }
+        self.status = tr("Une IA a modifié le projet (Annuler pour revenir en arrière).").into();
+    }
+
+    /// Run AI commands (one JSON-RPC message per line, as `toonlight --mcp` reads them) on the
+    /// open project, and give back their answers.
+    fn run_commands(&mut self, lines: &[String]) -> Vec<String> {
         self.commit_floating();
         let mut srv = self
             .bridge_srv
@@ -1309,10 +1435,7 @@ impl AnimApp {
             .map(|c| (c.name.clone(), c.notes.clone(), c.doc.take()))
             .collect();
         srv.active = self.active_clip;
-        for (line, reply) in requests {
-            let answer = srv.handle_line(&line).unwrap_or_default();
-            let _ = reply.send(answer);
-        }
+        let answers = lines.iter().map(|line| srv.handle_line(line).unwrap_or_default()).collect();
         self.doc = std::mem::replace(&mut srv.doc, Doc::new(1, 1, 1.0));
         self.path = srv.path.clone();
         self.clips = srv
@@ -1331,7 +1454,7 @@ impl AnimApp {
         }
         self.bridge_srv = Some(srv);
         self.needs_full = true;
-        self.status = tr("Une IA a modifié le projet (Annuler pour revenir en arrière).").into();
+        answers
     }
 
     /// While there are unsaved changes, write a recovery copy every few minutes.
@@ -1600,38 +1723,80 @@ impl AnimApp {
         }
         let mut open = true;
         let (undo, redo) = self.doc.history();
+        let (marks, redo_marks) = self.doc.history_marks();
         let mut target: Option<usize> = None;
+        let mut mark: Option<usize> = None;
+        let mut jump: Option<bool> = None;
         egui::Window::new(tr("Historique d'annulation"))
             .open(&mut open)
-            .default_size([260.0, 360.0])
+            .default_size([280.0, 380.0])
             .show(ctx, |ui| {
                 ui.small(tr("Cliquez une étape pour revenir à cet état."));
+                ui.horizontal(|ui| {
+                    if ui
+                        .add_enabled(!undo.is_empty(), egui::Button::new(tr("Marquer cet état")))
+                        .on_hover_text(tr(
+                            "Pose une marque sur l'état actuel (ou la retire) : un endroit où revenir d'un seul coup, par exemple avant un essai.",
+                        ))
+                        .clicked()
+                    {
+                        mark = Some(undo.len());
+                    }
+                    if ui.button("◀").on_hover_text(tr("Revenir à la marque d'annulation précédente")).clicked() {
+                        jump = Some(false);
+                    }
+                    if ui.button("▶").on_hover_text(tr("Aller à la marque d'annulation suivante")).clicked() {
+                        jump = Some(true);
+                    }
+                });
+                ui.separator();
                 egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                     if ui.selectable_label(undo.is_empty(), tr("Début")).clicked() {
                         target = Some(0);
                     }
-                    for (i, drawing) in undo.iter().enumerate() {
-                        let label = format!("{}. {}", i + 1, if *drawing { tr("Dessin") } else { tr("Calques et images") });
-                        if ui.selectable_label(i + 1 == undo.len(), label).clicked() {
-                            target = Some(i + 1);
-                        }
-                    }
-                    for (k, drawing) in redo.iter().enumerate() {
-                        let i = undo.len() + k + 1;
-                        let label = format!("{}. {}", i, if *drawing { tr("Dessin") } else { tr("Calques et images") });
-                        if ui
-                            .add(egui::SelectableLabel::new(false, egui::RichText::new(label).weak()))
-                            .clicked()
-                        {
-                            target = Some(i);
-                        }
+                    let steps = undo.iter().zip(&marks).map(|s| (s, true)).chain(redo.iter().zip(&redo_marks).map(|s| (s, false)));
+                    for (i, ((drawing, marked), done)) in steps.enumerate() {
+                        let step = i + 1;
+                        ui.horizontal(|ui| {
+                            // the mark: a flag, clicked to put it or remove it
+                            let (r, flag) = ui.allocate_exact_size(vec2(16.0, 18.0), Sense::click());
+                            let flag = flag.on_hover_text(tr("Marque d'annulation (poser / retirer)"));
+                            let col = if *marked {
+                                Color32::from_rgb(240, 170, 40)
+                            } else if flag.hovered() {
+                                ui.visuals().weak_text_color()
+                            } else {
+                                ui.visuals().weak_text_color().gamma_multiply(0.35)
+                            };
+                            let p = ui.painter();
+                            let x = r.left() + 4.0;
+                            p.line_segment([pos2(x, r.top() + 3.0), pos2(x, r.bottom() - 2.0)], Line::new(1.5_f32, col));
+                            p.add(egui::Shape::convex_polygon(
+                                vec![pos2(x, r.top() + 3.0), pos2(x + 9.0, r.top() + 6.5), pos2(x, r.top() + 10.0)],
+                                if *marked { col } else { Color32::TRANSPARENT },
+                                Line::new(1.0_f32, col),
+                            ));
+                            if flag.clicked() {
+                                mark = Some(step);
+                            }
+                            let label = format!("{}. {}", step, if *drawing { tr("Dessin") } else { tr("Calques et images") });
+                            let text = if done { egui::RichText::new(label) } else { egui::RichText::new(label).weak() };
+                            if ui.add(egui::SelectableLabel::new(done && step == undo.len(), text)).clicked() {
+                                target = Some(step);
+                            }
+                        });
                     }
                 });
             });
+        if let Some(step) = mark {
+            self.doc.toggle_undo_mark(step);
+        }
+        if let Some(forward) = jump {
+            self.go_undo_mark(forward);
+        }
         if let Some(t) = target {
             self.commit_floating();
-            while self.doc.history().0.len() > t && self.doc.undo() {}
-            while self.doc.history().0.len() < t && self.doc.redo() {}
+            self.doc.go_to_step(t);
             self.needs_full = true;
         }
         if !open {
@@ -1807,6 +1972,10 @@ impl AnimApp {
             self.comp = vec![0; w * h * 4];
             self.needs_full = true;
         }
+        if self.needs_full {
+            // the picture itself changed (not only the frame shown)
+            self.full_stamp += 1;
+        }
         let key = (self.doc.frame, onion);
         if self.shown != key {
             self.needs_full = true;
@@ -1837,6 +2006,7 @@ impl AnimApp {
         if r.is_empty() || self.tex.is_none() {
             return;
         }
+        self.paint_stamp += 1;
         if self.viewing_camera() {
             self.needs_full = true;
             return;
@@ -1989,6 +2159,25 @@ impl AnimApp {
                         self.show_history = true;
                         ui.close_menu();
                     }
+                    if ui
+                        .add_enabled(self.doc.can_undo(), egui::Button::new(tr("Marquer cet état")))
+                        .on_hover_text(tr(
+                            "Pose une marque sur l'état actuel (ou la retire) : un endroit où revenir d'un seul coup, par exemple avant un essai.",
+                        ))
+                        .clicked()
+                    {
+                        self.toggle_undo_mark();
+                        ui.close_menu();
+                    }
+                    if ui.button(tr("Revenir à la marque d'annulation précédente")).clicked() {
+                        self.go_undo_mark(false);
+                        ui.close_menu();
+                    }
+                    if ui.button(tr("Aller à la marque d'annulation suivante")).clicked() {
+                        self.go_undo_mark(true);
+                        ui.close_menu();
+                    }
+                    ui.separator();
                     if ui.button(tr("Préférences…")).clicked() {
                         self.show_prefs = true;
                         ui.close_menu();
@@ -2147,6 +2336,40 @@ impl AnimApp {
                         }
                     });
                     ui.horizontal(|ui| {
+                        ui.label(tr("Ratio de temps"));
+                        ui.add(
+                            egui::DragValue::new(&mut self.stretch_pct)
+                                .range(1.0..=10000.0)
+                                .speed(1.0)
+                                .max_decimals(0)
+                                .suffix(" %"),
+                        );
+                        if ui
+                            .button(tr("Appliquer le ratio"))
+                            .on_hover_text(tr(
+                                "Étire le calque (et les calques choisis avec lui) dans cette proportion : 200 % = deux fois plus lent, 50 % = deux fois plus rapide.",
+                            ))
+                            .clicked()
+                        {
+                            self.stretch_by_ratio();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label(tr("Exposition de chaque dessin"));
+                        ui.add(egui::DragValue::new(&mut self.retime_n).range(1..=999));
+                        if ui
+                            .button(tr("Recaler le calque"))
+                            .on_hover_text(tr(
+                                "Chaque dessin du calque dure ce nombre d'images : 1 = une image par dessin, 2 = animation « par deux »…",
+                            ))
+                            .clicked()
+                        {
+                            self.retime_layer();
+                            ui.close_menu();
+                        }
+                    });
+                    ui.horizontal(|ui| {
                         ui.add(egui::DragValue::new(&mut self.shift_n).range(-100000..=100000))
                             .on_hover_text(tr("Nombre d'images : positif = plus tard, négatif = plus tôt"));
                         if ui
@@ -2230,6 +2453,20 @@ impl AnimApp {
                     ui.separator();
                     let cl = self.doc.current_layer;
                     ui.checkbox(&mut self.doc.layers[cl].stencil, tr("Pochoir"));
+                    let mut folded = self.doc.layers[cl].collapsed;
+                    if ui
+                        .checkbox(&mut folded, tr("Calque replié"))
+                        .on_hover_text(tr(
+                            "Un calque replié ne prend qu'une ligne fine dans la timeline (aussi : le petit triangle à droite de son nom).",
+                        ))
+                        .changed()
+                    {
+                        self.collapse_layers(false, Some(folded));
+                    }
+                    if ui.button(tr("Début du calque ici")).clicked() {
+                        self.trim_layer_start(self.doc.frame);
+                        ui.close_menu();
+                    }
                     if ui.button(tr("Fin du calque ici")).clicked() {
                         self.doc.push_structure_undo();
                         let f = self.doc.frame;
@@ -3833,6 +4070,35 @@ impl AnimApp {
                     {
                         self.tl_timecode = !self.tl_timecode;
                     }
+                    ui.menu_button(tr("Lignes"), |ui| {
+                        let sizes = [tr("Petites"), tr("Moyennes"), tr("Grandes")];
+                        for (h, label) in crate::layout::TIMELINE_ROWS.into_iter().zip(sizes) {
+                            if ui.radio((self.rooms[room].timeline_row - h).abs() < 0.5, label).clicked() {
+                                self.rooms[room].timeline_row = h;
+                                self.layout_dirty = true;
+                                ui.close_menu();
+                            }
+                        }
+                        ui.separator();
+                        if ui
+                            .checkbox(&mut self.rooms[room].timeline_thumbs, tr("Vignettes des calques"))
+                            .on_hover_text(tr("Une petite image du dessin courant de chaque calque, à côté de son nom"))
+                            .changed()
+                        {
+                            self.layout_dirty = true;
+                        }
+                        ui.separator();
+                        if ui.button(tr("Replier tous les calques")).clicked() {
+                            self.collapse_layers(true, Some(true));
+                            ui.close_menu();
+                        }
+                        if ui.button(tr("Déplier tous les calques")).clicked() {
+                            self.collapse_layers(true, Some(false));
+                            ui.close_menu();
+                        }
+                    })
+                    .response
+                    .on_hover_text(tr("Hauteur des lignes de la timeline, vignettes et calques repliés"));
                     ui.menu_button(tr("Ajuster"), |ui| {
                         if ui.button(tr("Tout le plan")).clicked() {
                             self.tl_fit = Some(TlFit::Clip);
@@ -4005,10 +4271,20 @@ impl AnimApp {
 
     fn timeline_grid(&mut self, ui: &mut egui::Ui, th: &Theme) {
         self.update_peaks();
-        const COL: f32 = 250.0;
         const HEAD: f32 = 20.0;
-        const ROW: f32 = 30.0;
         const NOTES: f32 = 18.0;
+        /// Height of a folded layer's row.
+        const FOLDED: f32 = 12.0;
+        // the rows' height in this room, and room for the layers' small pictures
+        let row_h = self.rooms[self.room].timeline_row.clamp(20.0, 64.0);
+        let thumbs = self.rooms[self.room].timeline_thumbs;
+        let thumb_h = (row_h - 6.0).floor();
+        let thumb_w = if thumbs {
+            (thumb_h * self.doc.w as f32 / self.doc.h.max(1) as f32).clamp(8.0, 80.0).floor()
+        } else {
+            0.0
+        };
+        let col_w = 250.0 + if thumbs { thumb_w + 6.0 } else { 0.0 };
         let area = ui.available_rect_before_wrap();
         let resp = ui.allocate_rect(area, Sense::click_and_drag());
         let painter = ui.painter_at(area);
@@ -4016,7 +4292,7 @@ impl AnimApp {
         let rows: Vec<usize> = (0..nl_all).rev().filter(|&li| self.layer_in_timeline(li)).collect();
         let nl = rows.len();
         let nf = self.doc.frames;
-        let cells_w = (area.width() - COL).max(1.0);
+        let cells_w = (area.width() - col_w).max(1.0);
         // the ruler, then the notes row when it is shown, then the layers
         let top = HEAD + if self.tl_notes { NOTES } else { 0.0 };
         let hover = resp.hover_pos();
@@ -4071,7 +4347,7 @@ impl AnimApp {
             // the zoom changed: the frame under the pointer (else the current frame) stays put
             let old = self.tl_cell_shown.max(0.1);
             let anchor = match hover {
-                Some(p) if p.x >= area.left() + COL => p.x - area.left() - COL,
+                Some(p) if p.x >= area.left() + col_w => p.x - area.left() - col_w,
                 _ => (self.doc.frame as f32 + 0.5) * old - self.tl_scroll.x,
             }
             .clamp(0.0, cells_w);
@@ -4081,7 +4357,19 @@ impl AnimApp {
         }
         let max_x = (nf as f32 * cell - cells_w + cell).max(0.0);
         let sound_rows = self.doc.sounds.len();
-        let max_y = ((nl + sound_rows) as f32 * ROW - (area.height() - top)).max(0.0);
+        // each row's height and its top (from the first row): the layers, then the sound tracks
+        let heights: Vec<f32> = rows
+            .iter()
+            .map(|&li| if self.doc.layers[li].collapsed { FOLDED } else { row_h })
+            .chain(std::iter::repeat_n(row_h, sound_rows))
+            .collect();
+        let mut tops = Vec::with_capacity(heights.len());
+        let mut rows_h = 0.0;
+        for h in &heights {
+            tops.push(rows_h);
+            rows_h += h;
+        }
+        let max_y = (rows_h - (area.height() - top)).max(0.0);
         // bring the current frame into view when it changes (scrolling away from it is allowed)
         if self.doc.frame != self.tl_frame_seen {
             self.tl_frame_seen = self.doc.frame;
@@ -4102,8 +4390,31 @@ impl AnimApp {
         let text = th.text;
         let font = egui::FontId::proportional(12.0);
         let small = egui::FontId::proportional(10.0);
-        let cell_x = |f: usize| area.left() + COL + f as f32 * cell - sx;
-        let row_y = |r: usize| area.top() + top + r as f32 * ROW - sy;
+        let cell_x = |f: usize| area.left() + col_w + f as f32 * cell - sx;
+        let row_y = |r: usize| area.top() + top + tops[r] - sy;
+        // the row at a height of the panel
+        let row_at = |y: f32| {
+            let rel = y - area.top() - top + sy;
+            tops.iter()
+                .rposition(|t| *t <= rel)
+                .filter(|&r| rel >= 0.0 && rel < tops[r] + heights[r])
+        };
+        let tiny = egui::FontId::proportional(9.0);
+        // the layers' small pictures, for the rows in view
+        let mut thumb_tex: std::collections::HashMap<usize, egui::TextureId> = Default::default();
+        self.thumbs.retain(|l, _| thumbs && *l < nl_all);
+        if thumbs {
+            let mut budget = 2;
+            for (r, &li) in rows.iter().enumerate() {
+                let y = row_y(r);
+                if self.doc.layers[li].collapsed || y + row_h < area.top() || y > area.bottom() {
+                    continue;
+                }
+                if let Some(t) = self.layer_thumb(ui.ctx(), li, thumb_w as usize, thumb_h as usize, &mut budget) {
+                    thumb_tex.insert(li, t);
+                }
+            }
+        }
         // frames between two numbers of the ruler and two lines of the grid
         let label_w = if self.tl_timecode { 34.0 } else { 22.0 };
         let step = [1usize, 2, 5, 10, 25, 50, 100, 250, 500, 1000]
@@ -4113,13 +4424,15 @@ impl AnimApp {
         let line_step = if cell >= 8.0 { 1 } else { step };
 
         // rows
-        let grid_clip = egui::Rect::from_min_max(pos2(area.left() + COL, area.top() + top), area.max);
-        let col_clip = egui::Rect::from_min_max(pos2(area.left(), area.top() + top), pos2(area.left() + COL, area.bottom()));
+        let grid_clip = egui::Rect::from_min_max(pos2(area.left() + col_w, area.top() + top), area.max);
+        let col_clip = egui::Rect::from_min_max(pos2(area.left(), area.top() + top), pos2(area.left() + col_w, area.bottom()));
         for (r, &li) in rows.iter().enumerate() {
             let layer = &self.doc.layers[li];
             let y = row_y(r);
+            let h = heights[r];
+            let folded = layer.collapsed;
             let cur = li == self.doc.current_layer;
-            let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(COL, ROW - 1.0));
+            let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(col_w, h - 1.0));
             let p = painter.with_clip_rect(col_clip);
             let row_col = if cur {
                 th.selected
@@ -4135,8 +4448,11 @@ impl AnimApp {
                 c32(layer.group),
             );
             let cell_col = lerp_color(th.cell, c32(layer.group), 0.55);
-            let icon = |i: usize| egui::Rect::from_min_size(pos2(area.left() + 4.0 + i as f32 * 24.0, y + 5.0), vec2(20.0, 20.0));
-            for (i, on) in [(0, layer.visible), (1, layer.locked), (2, layer.onion), (3, layer.stencil)] {
+            let icon =
+                |i: usize| egui::Rect::from_min_size(pos2(area.left() + 4.0 + i as f32 * 24.0, y + (h - 20.0) / 2.0), vec2(20.0, 20.0));
+            // a folded layer shows no icons
+            let icons = [(0, layer.visible), (1, layer.locked), (2, layer.onion), (3, layer.stencil)];
+            for (i, on) in icons.into_iter().filter(|_| !folded) {
                 let ir = icon(i);
                 p.rect_filled(ir, 3.0, if on { th.widget } else { th.panel.gamma_multiply(0.8) });
                 let col = if on { text } else { text.gamma_multiply(0.3) };
@@ -4190,24 +4506,53 @@ impl AnimApp {
                     }
                 }
             }
-            p.text(
-                pos2(area.left() + 104.0, y + ROW / 2.0),
-                egui::Align2::LEFT_CENTER,
-                &layer.name,
-                font.clone(),
-                text,
-            );
-            p.text(
-                pos2(area.left() + COL - 6.0, y + ROW / 2.0),
-                egui::Align2::RIGHT_CENTER,
-                format!("{:.0}%", layer.opacity * 100.0),
-                small.clone(),
-                text.gamma_multiply(0.7),
-            );
+            // the triangle that folds or unfolds the layer, at the right of the name column
+            let tc = pos2(area.left() + col_w - 9.0, y + h / 2.0);
+            let triangle = if folded {
+                vec![tc + vec2(-2.5, -4.0), tc + vec2(3.0, 0.0), tc + vec2(-2.5, 4.0)]
+            } else {
+                vec![tc + vec2(-4.0, -2.5), tc + vec2(4.0, -2.5), tc + vec2(0.0, 3.0)]
+            };
+            p.add(egui::Shape::convex_polygon(triangle, text.gamma_multiply(0.6), Line::NONE));
+            if folded {
+                p.text(
+                    pos2(area.left() + 10.0, y + h / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    &layer.name,
+                    tiny.clone(),
+                    text.gamma_multiply(0.8),
+                );
+            } else {
+                let mut name_x = area.left() + 104.0;
+                if thumbs {
+                    let tr = egui::Rect::from_min_size(pos2(name_x, y + 3.0), vec2(thumb_w, thumb_h));
+                    p.rect_filled(tr, 1.0, c32(self.doc.paper));
+                    if let Some(t) = thumb_tex.get(&li) {
+                        let uv = egui::Rect::from_min_max(pos2(0.0, 0.0), pos2(1.0, 1.0));
+                        p.image(*t, tr, uv, Color32::WHITE);
+                    }
+                    p.rect_stroke(tr, 1.0, Line::new(1.0_f32, th.border), StrokeKind::Inside);
+                    name_x += thumb_w + 6.0;
+                }
+                p.text(
+                    pos2(name_x, y + h / 2.0),
+                    egui::Align2::LEFT_CENTER,
+                    &layer.name,
+                    font.clone(),
+                    text,
+                );
+                p.text(
+                    pos2(area.left() + col_w - 20.0, y + h / 2.0),
+                    egui::Align2::RIGHT_CENTER,
+                    format!("{:.0}%", layer.opacity * 100.0),
+                    small.clone(),
+                    text.gamma_multiply(0.7),
+                );
+            }
             // cells
             let g = painter.with_clip_rect(grid_clip);
             g.rect_filled(
-                egui::Rect::from_min_max(pos2(area.left() + COL, y), pos2(area.right(), y + ROW - 1.0)),
+                egui::Rect::from_min_max(pos2(area.left() + col_w, y), pos2(area.right(), y + h - 1.0)),
                 0.0,
                 th.panel.gamma_multiply(0.85),
             );
@@ -4215,13 +4560,12 @@ impl AnimApp {
             let last = (((sx + cells_w) / cell).ceil() as usize + 1).min(nf);
             let mut has_prev = self.doc.key_index(li, first).is_some();
             let numbers = self.doc.drawing_numbers(li);
-            let tiny = egui::FontId::proportional(9.0);
             let lend = layer.end.filter(|e| *e + 1 < nf);
             // zoomed out, the cells touch each other and lose their details
             let gap = if cell >= 8.0 { 1.0 } else { 0.0 };
             for f in first..last {
                 let x = cell_x(f);
-                let c = egui::Rect::from_min_size(pos2(x + gap, y + 3.0), vec2(cell - 2.0 * gap, ROW - 7.0));
+                let c = egui::Rect::from_min_size(pos2(x + gap, y + 3.0), vec2(cell - 2.0 * gap, h - 7.0));
                 let outside = lend.is_some_and(|e| f > e);
                 match layer.cels.get(f).copied().flatten() {
                     Some(id) => {
@@ -4232,7 +4576,7 @@ impl AnimApp {
                             0.0,
                             th.text.gamma_multiply(0.6),
                         );
-                        if cell >= 16.0 {
+                        if cell >= 16.0 && !folded {
                             let label: String = match layer.names.get(&id) {
                                 Some(n) => n.chars().take(3).collect(),
                                 None => numbers.get(&id).map(|n| n.to_string()).unwrap_or_default(),
@@ -4246,7 +4590,7 @@ impl AnimApp {
                             );
                         }
                         // image mark: a corner in the mark's colour
-                        if let Some(m) = layer.marks.get(&id) {
+                        if let Some(m) = layer.marks.get(&id).filter(|_| !folded) {
                             let k = (cell * 0.45).clamp(3.0, 9.0);
                             let col = c32(crate::doc::GROUPS[(*m as usize).min(12)]);
                             g.add(egui::Shape::convex_polygon(
@@ -4262,20 +4606,20 @@ impl AnimApp {
                         }
                     }
                     None if has_prev && !outside => {
-                        g.rect_filled(c.shrink2(vec2(-gap, 7.0)), 0.0, cell_col.gamma_multiply(0.7));
+                        g.rect_filled(c.shrink2(vec2(-gap, (h - 7.0) * 0.3)), 0.0, cell_col.gamma_multiply(0.7));
                     }
                     None => {}
                 }
                 // what the post behaviour shows after the layer's end
                 if outside && layer.post != crate::doc::Behavior::None {
                     g.line_segment(
-                        [pos2(x + 2.0 * gap, y + ROW / 2.0), pos2(x + cell - 2.0 * gap, y + ROW / 2.0)],
+                        [pos2(x + 2.0 * gap, y + h / 2.0), pos2(x + cell - 2.0 * gap, y + h / 2.0)],
                         Line::new(1.0_f32, cell_col.gamma_multiply(0.8)),
                     );
                 }
                 if (f + 1) % line_step == 0 {
                     g.line_segment(
-                        [pos2(x + cell, y), pos2(x + cell, y + ROW - 1.0)],
+                        [pos2(x + cell, y), pos2(x + cell, y + h - 1.0)],
                         Line::new(1.0_f32, th.border.gamma_multiply(0.6)),
                     );
                 }
@@ -4283,13 +4627,13 @@ impl AnimApp {
             if let Some(e) = lend {
                 let x = cell_x(e + 1);
                 g.line_segment(
-                    [pos2(x, y + 1.0), pos2(x, y + ROW - 2.0)],
+                    [pos2(x, y + 1.0), pos2(x, y + h - 2.0)],
                     Line::new(2.0_f32, Color32::from_rgb(240, 200, 60)),
                 );
             }
             if let Some((sl, a, b)) = self.cell_sel {
                 if sl == li {
-                    let r = egui::Rect::from_min_max(pos2(cell_x(a), y + 1.0), pos2(cell_x(b) + cell, y + ROW - 2.0));
+                    let r = egui::Rect::from_min_max(pos2(cell_x(a), y + 1.0), pos2(cell_x(b) + cell, y + h - 2.0));
                     g.rect_filled(r, 2.0, Color32::from_rgba_unmultiplied(60, 140, 255, 50));
                     g.rect_stroke(r, 2.0, Line::new(1.5_f32, Color32::from_rgb(60, 140, 255)), StrokeKind::Inside);
                 }
@@ -4298,8 +4642,9 @@ impl AnimApp {
         // sound track rows, under the layers
         for (k, track) in self.doc.sounds.iter().enumerate() {
             let y = row_y(nl + k);
+            let h = heights[nl + k];
             let p = painter.with_clip_rect(col_clip);
-            let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(COL, ROW - 1.0));
+            let rowrect = egui::Rect::from_min_size(pos2(area.left(), y), vec2(col_w, h - 1.0));
             p.rect_filled(rowrect, 0.0, th.panel);
             let track_col = sound_color(track.color, &self.doc.groups);
             p.rect_filled(egui::Rect::from_min_size(rowrect.min, vec2(3.0, rowrect.height())), 0.0, track_col);
@@ -4307,7 +4652,7 @@ impl AnimApp {
             let muted = track.mute;
             let missing = self.audio.get(k).is_none_or(|c| c.is_none());
             p.text(
-                pos2(area.left() + 10.0, y + ROW / 2.0),
+                pos2(area.left() + 10.0, y + h / 2.0),
                 egui::Align2::LEFT_CENTER,
                 format!("{} {name}", if track.locked { "🔒" } else { "♪" }),
                 font.clone(),
@@ -4321,7 +4666,7 @@ impl AnimApp {
             );
             let g = painter.with_clip_rect(grid_clip);
             g.rect_filled(
-                egui::Rect::from_min_max(pos2(area.left() + COL, y), pos2(area.right(), y + ROW - 1.0)),
+                egui::Rect::from_min_max(pos2(area.left() + col_w, y), pos2(area.right(), y + h - 1.0)),
                 0.0,
                 th.panel.gamma_multiply(0.7),
             );
@@ -4334,9 +4679,9 @@ impl AnimApp {
                     continue;
                 }
                 let x = cell_x(f);
-                let hh = (ROW - 6.0) * v;
+                let hh = (h - 6.0) * v;
                 g.rect_filled(
-                    egui::Rect::from_center_size(pos2(x + cell / 2.0, y + ROW / 2.0), vec2((cell - 2.0).max(1.0), hh.max(1.0))),
+                    egui::Rect::from_center_size(pos2(x + cell / 2.0, y + h / 2.0), vec2((cell - 2.0).max(1.0), hh.max(1.0))),
                     1.0,
                     wave,
                 );
@@ -4346,7 +4691,7 @@ impl AnimApp {
         let head = egui::Rect::from_min_size(area.min, vec2(area.width(), HEAD));
         painter.rect_filled(head, 0.0, th.widget);
         let hp = painter.with_clip_rect(egui::Rect::from_min_max(
-            pos2(area.left() + COL, area.top()),
+            pos2(area.left() + col_w, area.top()),
             pos2(area.right(), area.top() + HEAD),
         ));
         let first = (sx / cell).floor() as usize;
@@ -4389,10 +4734,10 @@ impl AnimApp {
             while let Some((f, note)) = notes.next() {
                 let x0 = cell_x(*f);
                 let x1 = notes.peek().map(|n| cell_x(*n.0) - 2.0).unwrap_or(area.right());
-                if x1 < area.left() + COL || x0 > area.right() {
+                if x1 < area.left() + col_w || x0 > area.right() {
                     continue;
                 }
-                let clip = egui::Rect::from_min_max(pos2(x0.max(area.left() + COL), y), pos2(x1.max(x0 + 4.0), y + NOTES));
+                let clip = egui::Rect::from_min_max(pos2(x0.max(area.left() + col_w), y), pos2(x1.max(x0 + 4.0), y + NOTES));
                 let np = painter.with_clip_rect(clip.intersect(area));
                 np.rect_filled(egui::Rect::from_min_size(pos2(x0, y + 1.0), vec2(3.0, NOTES - 2.0)), 0.0, note_col);
                 np.text(
@@ -4418,7 +4763,7 @@ impl AnimApp {
             let left = cell_x(lo);
             let right = cell_x(hi) + cell;
             hp.rect_filled(
-                egui::Rect::from_min_max(pos2(area.left() + COL, area.top()), pos2(left, area.top() + HEAD)),
+                egui::Rect::from_min_max(pos2(area.left() + col_w, area.top()), pos2(left, area.top() + HEAD)),
                 0.0,
                 shade,
             );
@@ -4452,8 +4797,8 @@ impl AnimApp {
         }
         // current frame
         let x = cell_x(self.doc.frame);
-        if x + cell > area.left() + COL {
-            let full = painter.with_clip_rect(egui::Rect::from_min_max(pos2(area.left() + COL, area.top()), area.max));
+        if x + cell > area.left() + col_w {
+            let full = painter.with_clip_rect(egui::Rect::from_min_max(pos2(area.left() + col_w, area.top()), area.max));
             full.rect_stroke(
                 egui::Rect::from_min_max(pos2(x, area.top()), pos2(x + cell, area.bottom())),
                 0.0,
@@ -4476,14 +4821,13 @@ impl AnimApp {
 
         // interaction
         self.tl_drag = resp.dragged();
-        let frame_at = |x: f32| (((x - area.left() - COL + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
+        let frame_at = |x: f32| (((x - area.left() - col_w + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
         if resp.secondary_clicked() {
             if let Some(p) = resp.interact_pointer_pos() {
                 self.tl_menu_frame = frame_at(p.x);
                 // a right click on a layer's row makes it the current layer
                 if p.y >= area.top() + top {
-                    let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
-                    if r < nl {
+                    if let Some(r) = row_at(p.y).filter(|r| *r < nl) {
                         self.doc.focus_layer(rows[r]);
                     }
                 }
@@ -4491,7 +4835,7 @@ impl AnimApp {
         }
         // a double click in the notes row writes a note there; a note shows whole under the pointer
         if self.tl_notes {
-            let in_notes = |p: Pos2| p.x >= area.left() + COL && p.y >= area.top() + HEAD && p.y < area.top() + top;
+            let in_notes = |p: Pos2| p.x >= area.left() + col_w && p.y >= area.top() + HEAD && p.y < area.top() + top;
             if let Some(p) = hover.filter(|p| in_notes(*p)) {
                 let f = frame_at(p.x);
                 if resp.double_clicked() {
@@ -4539,6 +4883,10 @@ impl AnimApp {
                 self.needs_full = true;
                 ui.close_menu();
             }
+            if ui.button(tr("Début du calque ici")).clicked() {
+                self.trim_layer_start(f);
+                ui.close_menu();
+            }
             if ui.button(tr("Scinder le calque ici")).clicked() {
                 self.split_layer(f);
                 ui.close_menu();
@@ -4547,11 +4895,10 @@ impl AnimApp {
         if let Some(p) = resp.interact_pointer_pos() {
             let pressed = (resp.clicked() || resp.drag_started() || resp.dragged()) && !resp.secondary_clicked();
             let shift = ui.input(|i| i.modifiers.shift);
-            if pressed && shift && p.y >= area.top() + top && p.x >= area.left() + COL {
+            if pressed && shift && p.y >= area.top() + top && p.x >= area.left() + col_w {
                 // shift + click / drag: select cells from the current frame
-                let frame = (((p.x - area.left() - COL + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
-                let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
-                if r < nl {
+                let frame = (((p.x - area.left() - col_w + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
+                if let Some(r) = row_at(p.y).filter(|r| *r < nl) {
                     let li = rows[r];
                     if self.cell_sel.map(|s| s.0) != Some(li) {
                         self.cell_anchor = if li == self.doc.current_layer { self.doc.frame } else { frame };
@@ -4565,24 +4912,32 @@ impl AnimApp {
                 if resp.clicked() || resp.drag_started() {
                     self.cell_sel = None;
                 }
-                let in_cells = p.x >= area.left() + COL;
-                let frame = (((p.x - area.left() - COL + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
+                let in_cells = p.x >= area.left() + col_w;
+                let frame = (((p.x - area.left() - col_w + sx) / cell).floor().max(0.0) as usize).min(nf - 1);
                 if p.y < area.top() + top {
                     if in_cells {
                         self.doc.frame = frame;
                     }
                 } else {
-                    let r = ((p.y - area.top() - top + sy) / ROW).floor() as usize;
-                    if r < nl {
+                    if let Some(r) = row_at(p.y).filter(|r| *r < nl) {
                         let li = rows[r];
                         if in_cells {
                             self.doc.focus_layer(li);
                             self.doc.frame = frame;
                         } else if resp.clicked() {
                             let ix = ((p.x - area.left() - 4.0) / 24.0).floor() as i32;
-                            let iy = p.y - row_y(r);
+                            let iy = p.y - row_y(r) - (heights[r] - 20.0) / 2.0;
+                            let folded = self.doc.layers[li].collapsed;
                             let (cmd, shift) = ui.input(|i| (i.modifiers.command || i.modifiers.ctrl, i.modifiers.shift));
-                            if (0..4).contains(&ix) && (5.0..25.0).contains(&iy) {
+                            if p.x >= area.left() + col_w - 18.0 {
+                                // the triangle folds or unfolds the layer, and the layers chosen with it
+                                let targets = self.doc.target_layers();
+                                let group = if targets.contains(&li) { targets } else { vec![li] };
+                                for i in group {
+                                    self.doc.layers[i].collapsed = !folded;
+                                }
+                                self.doc.dirty = true;
+                            } else if !folded && (0..4).contains(&ix) && (0.0..20.0).contains(&iy) {
                                 // an icon of one of the chosen layers changes them all
                                 let targets = self.doc.target_layers();
                                 let group = if targets.contains(&li) { targets } else { vec![li] };
@@ -4624,6 +4979,37 @@ impl AnimApp {
                 }
             }
         }
+    }
+
+    /// The small picture of a layer's current image for the timeline. It is made again only when
+    /// the image changed: at most `budget` pictures per screen refresh, and none while playing.
+    fn layer_thumb(&mut self, ctx: &egui::Context, li: usize, tw: usize, th: usize, budget: &mut usize) -> Option<egui::TextureId> {
+        let id = self.doc.shown_drawing(li, self.doc.frame);
+        let paint = if li == self.doc.current_layer { self.paint_stamp } else { 0 };
+        let key: ThumbKey = (id, self.full_stamp, paint, tw, th);
+        let made = self.thumbs.get(&li).map(|t| t.0 == key);
+        if made.is_none() || (made == Some(false) && *budget > 0 && !self.playing) {
+            *budget = budget.saturating_sub(1);
+            let px = match id {
+                Some(id) => thumb_pixels(&self.doc.drawings[id].px, self.doc.w, self.doc.h, tw, th, self.doc.paper),
+                None => [self.doc.paper[0], self.doc.paper[1], self.doc.paper[2], 255].repeat(tw * th),
+            };
+            let img = egui::ColorImage::from_rgba_unmultiplied([tw, th], &px);
+            match self.thumbs.get_mut(&li) {
+                Some(t) => {
+                    t.1.set(img, egui::TextureOptions::LINEAR);
+                    t.0 = key;
+                }
+                None => {
+                    let t = ctx.load_texture(format!("layer-thumb-{li}"), img, egui::TextureOptions::LINEAR);
+                    self.thumbs.insert(li, (key, t));
+                }
+            }
+        } else if made == Some(false) {
+            // made on a next refresh
+            ctx.request_repaint();
+        }
+        self.thumbs.get(&li).map(|t| t.1.id())
     }
 
     fn canvas(&mut self, ctx: &egui::Context) {
@@ -6675,6 +7061,18 @@ impl AnimApp {
         if go(A::SplitLayer) {
             self.split_layer(self.doc.frame);
         }
+        if go(A::CollapseLayer) {
+            self.collapse_layers(false, None);
+        }
+        if go(A::UndoMark) {
+            self.toggle_undo_mark();
+        }
+        if go(A::UndoPrevMark) {
+            self.go_undo_mark(false);
+        }
+        if go(A::UndoNextMark) {
+            self.go_undo_mark(true);
+        }
         let (flip_prev, flip_next) = ctx.input(|i| (km.down(i, A::FlipPrev), km.down(i, A::FlipNext)));
         if flip_prev || flip_next {
             let origin = *self.flip_origin.get_or_insert(self.doc.frame);
@@ -7183,6 +7581,42 @@ impl eframe::App for AnimApp {
 }
 
 /// A sound track's colour in the timeline: 0 = the usual blue, 1-12 = that colour group's colour.
+/// What a layer's small timeline picture was made from: the drawing, the two picture counters
+/// and its size.
+type ThumbKey = (Option<usize>, u64, u64, usize, usize);
+
+/// A drawing (straight RGBA, `w` × `h`) reduced to `tw` × `th` over the paper colour. Every pixel
+/// counts (a box average), and faint coverage is strengthened so thin lines stay readable.
+fn thumb_pixels(px: &[u8], w: usize, h: usize, tw: usize, th: usize, paper: [u8; 3]) -> Vec<u8> {
+    let mut out = vec![255u8; tw * th * 4];
+    for ty in 0..th {
+        let y0 = ty * h / th;
+        let y1 = ((ty + 1) * h / th).clamp(y0 + 1, h.max(y0 + 1));
+        for tx in 0..tw {
+            let x0 = tx * w / tw;
+            let x1 = ((tx + 1) * w / tw).clamp(x0 + 1, w.max(x0 + 1));
+            let (mut r, mut g, mut b, mut a) = (0u64, 0u64, 0u64, 0u64);
+            for y in y0..y1.min(h) {
+                for p in px[(y * w + x0) * 4..(y * w + x1.min(w)) * 4].chunks_exact(4) {
+                    let al = p[3] as u64;
+                    r += p[0] as u64 * al;
+                    g += p[1] as u64 * al;
+                    b += p[2] as u64 * al;
+                    a += al;
+                }
+            }
+            let n = ((y1 - y0) * (x1 - x0)) as f32 * 255.0;
+            let cover = (a as f32 / n).clamp(0.0, 1.0).sqrt();
+            let o = &mut out[(ty * tw + tx) * 4..(ty * tw + tx) * 4 + 3];
+            for (k, sum) in [r, g, b].into_iter().enumerate() {
+                let c = sum.checked_div(a).unwrap_or(0) as f32;
+                o[k] = (paper[k] as f32 * (1.0 - cover) + c * cover).round() as u8;
+            }
+        }
+    }
+    out
+}
+
 fn sound_color(c: u8, groups: &[crate::doc::Group]) -> Color32 {
     match groups.get(c as usize) {
         Some(g) if c > 0 => c32(g.color),
