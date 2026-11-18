@@ -1,0 +1,53 @@
+# Panels coming and going quickly, for tools/ui-reader.ps1: the buttons a screen reader may be
+# looking at (or asking to focus) vanish from one refresh to the next.
+sleep 6
+click 119 335             # the arrow of the Colours panel
+wait 6
+dock colours left
+wait 4
+float tools
+wait 3
+dock tools left
+wait 3
+float colours
+wait 3
+float settings
+wait 3
+dock settings left
+wait 3
+dock colours left
+wait 3
+hide colours
+wait 3
+show colours
+wait 3
+float tools
+wait 2
+dock tools left
+wait 2
+float colours
+wait 2
+dock colours left
+wait 2
+float tools
+wait 2
+dock tools left
+wait 2
+float colours
+wait 2
+dock colours left
+wait 2
+float settings
+wait 2
+dock settings left
+wait 2
+open history
+wait 3
+close history
+wait 3
+open preferences
+wait 3
+close preferences
+sleep 1
+shot ui-check/5-reader-end.png
+quit

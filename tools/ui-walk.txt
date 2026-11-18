@@ -1,0 +1,75 @@
+# A walk through the interface, played by `toonlight --script tools/ui-walk.txt` on a fresh
+# install (CI does it on Windows, macOS and Linux): panels float, dock, hide and come back,
+# rooms change, every window opens, tools are picked, a stroke is drawn and undone.
+# Pictures go to the folder ui-check (make it first).
+sleep 2
+click 119 335             # the arrow of the Colours panel: it becomes a floating window
+wait 20
+shot ui-check/1-colours-floating.png
+click 94 60               # a place in the Tools panel's header
+float tools
+float settings
+float presets
+float light
+float sound
+float project
+float shortcuts
+wait 15
+shot ui-check/2-all-floating.png
+dock tools left
+dock colours left
+dock settings left
+dock sound right
+dock project right
+dock shortcuts right
+hide presets
+hide light
+wait 10
+show presets
+show light
+show correction
+show remote
+show groups
+wait 10
+room 2
+wait 10
+room 3
+wait 5
+room 4
+wait 5
+room 1
+wait 10
+open history
+open shortcuts
+open storyboard
+open groups
+open preferences
+open xsheet
+open effects
+open ai
+wait 15
+shot ui-check/3-windows-open.png
+close history
+close shortcuts
+close storyboard
+close groups
+close preferences
+close xsheet
+close effects
+close ai
+tool camera
+wait 5
+tool text
+wait 5
+tool select
+wait 5
+tool pen
+drag 620 250 760 330      # a stroke on the canvas
+wait 5
+key Z cmd                 # undo
+key Space                 # play
+wait 20
+key Space
+wait 10
+shot ui-check/4-end.png
+quit

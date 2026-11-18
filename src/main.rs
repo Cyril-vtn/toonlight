@@ -16,13 +16,35 @@ mod layout;
 mod mcp;
 mod prefs;
 mod psd;
+mod script;
 mod select;
 mod settings;
 mod sound;
 mod tablet;
 mod text;
 
+/// When the program stops on an internal error, the error is also written to `crash.log` in the
+/// settings folder: an installed app has no terminal to say it in (on Windows it just closes),
+/// and the file is what to send with a report.
+fn keep_crash_reports() {
+    let usual = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        usual(info);
+        if let Some(dir) = i18n::config_dir() {
+            let _ = std::fs::create_dir_all(&dir);
+            let text = format!(
+                "Toonlight {} on {} stopped on an internal error.\n\n{info}\n\n{}\n",
+                env!("CARGO_PKG_VERSION"),
+                std::env::consts::OS,
+                std::backtrace::Backtrace::force_capture()
+            );
+            let _ = std::fs::write(dir.join(app::CRASH_LOG), text);
+        }
+    }));
+}
+
 fn main() -> eframe::Result<()> {
+    keep_crash_reports();
     let args: Vec<String> = std::env::args().collect();
     if args.iter().any(|a| a == "--mcp") {
         // MCP server for AI assistants: JSON-RPC over stdin/stdout, no window.
@@ -63,6 +85,11 @@ fn main() -> eframe::Result<()> {
             i += 2;
             continue;
         }
+        if args[i] == "--script" && i + 1 < args.len() {
+            *app::START_SCRIPT.lock().unwrap() = Some(args[i + 1].clone().into());
+            i += 2;
+            continue;
+        }
         if args[i] == "--commands" && i + 1 < args.len() {
             *app::START_COMMANDS.lock().unwrap() = Some(args[i + 1].clone().into());
             i += 2;
@@ -95,7 +122,8 @@ fn main() -> eframe::Result<()> {
         });
     }
     let mut options = eframe::NativeOptions::default();
-    if screenshot.is_some() {
+    // a check running by itself must not take the keyboard away from the person
+    if screenshot.is_some() || app::START_SCRIPT.lock().unwrap().is_some() {
         viewport = viewport.with_active(false);
         #[cfg(target_os = "windows")]
         {

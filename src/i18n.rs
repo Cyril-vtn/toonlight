@@ -998,6 +998,8 @@ static TABLE: &[(&str, [&str; 5])] = &[
     ("Page web (HTML)…", ["Web page (HTML)…", "Página web (HTML)…", "Webseite (HTML)…", "网页 (HTML)…", "ウェブページ (HTML)…"]),
     ("Liste de montage (EDL)…", ["Edit list (EDL)…", "Lista de montaje (EDL)…", "Schnittliste (EDL)…", "剪辑表 (EDL)…", "編集リスト (EDL)…"]),
     ("La liste des plans avec leurs durées, à ouvrir dans un logiciel de montage (format CMX 3600).", ["The list of shots with their lengths, to open in an editing program (CMX 3600 format).", "La lista de planos con sus duraciones, para abrir en un programa de montaje (formato CMX 3600).", "Die Liste der Einstellungen mit ihren Längen, zum Öffnen in einem Schnittprogramm (Format CMX 3600).", "带时长的镜头列表，可在剪辑软件中打开（CMX 3600 格式）。", "各カットの長さ付きリスト。編集ソフトで開けます（CMX 3600 形式）。"]),
+    // crash report
+    ("La dernière fois, Toonlight s'est arrêté sur une erreur. Le rapport à joindre à un signalement : {}", ["Last time, Toonlight stopped on an error. The report to attach when you tell us about it: {}", "La última vez, Toonlight se detuvo por un error. El informe para adjuntar al avisarnos: {}", "Beim letzten Mal wurde Toonlight durch einen Fehler beendet. Der Bericht zum Anhängen an eine Meldung: {}", "上次 Toonlight 因错误而停止。反馈问题时请附上这份报告：{}", "前回、Toonlight はエラーで停止しました。報告に添付するレポート：{}"]),
     // guides and flipping
     ("Grille", ["Grid", "Cuadrícula", "Raster", "网格", "グリッド"]),
     ("Pas de la grille", ["Grid spacing", "Paso de la cuadrícula", "Rasterabstand", "网格间距", "グリッド間隔"]),

@@ -102,11 +102,56 @@ jobs:
           cat "$RUNNER_TEMP/start.log"
           test -s "$RUNNER_TEMP/toonlight-windows.png"
           grep -q "pen: Windows: listening to the window's messages: true" "$RUNNER_TEMP/start.log"
-      - name: Keep the picture of the app
+      # Then a script walks through the interface (tools/ui-walk.txt): panels float, dock and
+      # hide, rooms, every window, tools, a stroke. A stop on an internal error fails the step.
+      - name: Walk through the interface (Linux)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        run: |
+          export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings-walk"
+          mkdir -p ui-check
+          xvfb-run -a -s "-screen 0 1600x1000x24" ./target/debug/toonlight --script tools/ui-walk.txt
+          test -s ui-check/4-end.png
+      - name: Walk through the interface (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        run: |
+          export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings-walk"
+          mkdir -p ui-check
+          ./target/debug/toonlight --script tools/ui-walk.txt
+          test -s ui-check/4-end.png
+      - name: Walk through the interface (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: bash
+        env:
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings-walk"
+          mkdir -p ui-check
+          ./target/debug/toonlight.exe --script tools/ui-walk.txt
+          test -s ui-check/4-end.png
+      # On Windows, programs that read the screen (screen readers, and many everyday tools)
+      # talk to the app through its accessibility side, which only wakes up when one of them is
+      # there. tools/ui-reader.ps1 plays that part while panels come and go.
+      - name: Walk through the interface while a screen reader looks at it (Windows)
+        if: runner.os == 'Windows'
+        timeout-minutes: 10
+        shell: pwsh
+        env:
+          GALLIUM_DRIVER: llvmpipe
+          RUST_BACKTRACE: 1
+        run: |
+          $env:TOONLIGHT_CONFIG_DIR = "$env:RUNNER_TEMP\settings-reader"
+          New-Item -ItemType Directory -Force ui-check | Out-Null
+          ./tools/ui-reader.ps1 -App "target\debug\toonlight.exe" -Script "tools\ui-panels.txt"
+      - name: Keep the pictures of the app
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: started-${{ matrix.os }}
-          path: ${{ runner.temp }}/toonlight-*.png
+          path: |
+            ${{ runner.temp }}/toonlight-*.png
+            ui-check/*.png
           if-no-files-found: ignore
           retention-days: 14

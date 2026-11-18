@@ -41,6 +41,13 @@ pub static OPEN_GROUPS: std::sync::atomic::AtomicBool = std::sync::atomic::Atomi
 pub static OPEN_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Start option `--tool <name>`: the tool selected at start (pen, eraser, camera…).
 pub static START_TOOL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+/// The file, in the settings folder, where an internal error is written when the program stops
+/// on one (see `main.rs`); once shown at the next start it is kept as `crash-shown.log`.
+pub const CRASH_LOG: &str = "crash.log";
+
+/// Start option `--script <file>`: clicks, keys and actions played on the window by itself
+/// (see `script.rs`).
+pub static START_SCRIPT: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
 /// Start option `--commands <file>`: AI commands (one JSON-RPC message per line) run on the
 /// project once it is open, to set up a state for a check or a screenshot.
 pub static START_COMMANDS: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -304,6 +311,12 @@ pub struct AnimApp {
     /// A recovery copy found at start, offered back.
     recovery_offer: Option<PathBuf>,
     /// The storyboard's HTML export was asked for (done after the window is drawn).
+    /// A script playing on the window (`--script`): what is left of it, the action of this
+    /// refresh, and the picture being saved (the script waits for it).
+    script: Option<crate::script::Script>,
+    script_do: Option<crate::script::Action>,
+    script_shot: Option<PathBuf>,
+    script_sleep: Option<Instant>,
     /// A storyboard export asked for in the storyboard window, and how its sheets are laid out.
     export_board_pending: Option<BoardFormat>,
     board: crate::board::BoardOptions,
@@ -483,6 +496,10 @@ impl AnimApp {
             recovery_offer: None,
             export_board_pending: None,
             board: Default::default(),
+            script: None,
+            script_do: None,
+            script_shot: None,
+            script_sleep: None,
             repeat_n: 1,
             show_history: OPEN_HISTORY.load(std::sync::atomic::Ordering::Relaxed),
             xs_edit: None,
@@ -538,7 +555,20 @@ impl AnimApp {
             app.group_edit = Some(app.doc.groups.clone());
         }
         apply_theme(&cc.egui_ctx, &THEMES[app.theme]);
-        if matches!(app.shot, Shot::None) {
+        if let Some(p) = START_SCRIPT.lock().unwrap().take() {
+            let read = std::fs::read_to_string(&p).map_err(|e| e.to_string());
+            match read.and_then(|text| crate::script::Script::parse(&text)) {
+                Ok(s) => app.script = Some(s),
+                Err(e) => {
+                    eprintln!("--script: {}: {e}", p.display());
+                    std::process::exit(2);
+                }
+            }
+        }
+        // a check running by itself (a picture, a script) leaves the person's things alone:
+        // no bridge for an AI, no offer to bring back unsaved work
+        let alone = !matches!(app.shot, Shot::None) || app.script.is_some();
+        if !alone {
             let ctx = cc.egui_ctx.clone();
             app.bridge = crate::mcp::start_bridge(move || ctx.request_repaint());
         }
@@ -547,7 +577,21 @@ impl AnimApp {
         app.scrub_mode = prefs.scrub_mode;
         app.scrub_secs = prefs.scrub_secs;
         app.prefs = prefs;
-        if matches!(app.shot, Shot::None) {
+        // the last session stopped on an internal error: say where its report is, once
+        if !alone {
+            if let Some(dir) = i18n::config_dir() {
+                let log = dir.join(CRASH_LOG);
+                if log.is_file() {
+                    let kept = dir.join("crash-shown.log");
+                    let _ = std::fs::rename(&log, &kept);
+                    app.status = trf(
+                        "La dernière fois, Toonlight s'est arrêté sur une erreur. Le rapport à joindre à un signalement : {}",
+                        &[&kept.display()],
+                    );
+                }
+            }
+        }
+        if !alone {
             if let Some(r) = crate::prefs::recovery_path().filter(|r| r.is_file()) {
                 app.recovery_offer = Some(r);
             }
@@ -7671,6 +7715,87 @@ impl AnimApp {
         ));
     }
 
+    /// One refresh of a playing script: save the picture that arrived, do this refresh's action.
+    fn script_tick(&mut self, ctx: &egui::Context) {
+        if self.script.is_none() {
+            return;
+        }
+        ctx.request_repaint();
+        if let Some(path) = &self.script_shot {
+            let picture = ctx.input(|i| {
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Screenshot { image, .. } => Some(image.clone()),
+                    _ => None,
+                })
+            });
+            if let Some(img) = picture {
+                let bytes: Vec<u8> = img.pixels.iter().flat_map(|c| c.to_array()).collect();
+                if let Err(e) = io::save_png(path, &bytes, img.size[0], img.size[1]) {
+                    eprintln!("--script: picture not saved: {e}");
+                    std::process::exit(2);
+                }
+                self.script_shot = None;
+            }
+        }
+        if let Some(action) = self.script_do.take() {
+            self.script_action(ctx, action);
+        }
+        let done = self.script.as_ref().is_some_and(|s| s.is_done());
+        if done && self.script_do.is_none() && self.script_shot.is_none() && self.script_sleep.is_none() {
+            // the person takes over
+            self.script = None;
+        }
+    }
+
+    /// Do what a script's line asks of the app itself: the same things the buttons do.
+    fn script_action(&mut self, ctx: &egui::Context, action: crate::script::Action) {
+        use crate::script::Action as A;
+        let stop = |what: &str| -> ! {
+            eprintln!("--script: {what}");
+            std::process::exit(2);
+        };
+        let panel = |name: &str| {
+            crate::layout::ALL_PANELS
+                .into_iter()
+                .find(|p| format!("{p:?}").eq_ignore_ascii_case(name))
+                .unwrap_or_else(|| stop(&format!("no panel named {name}")))
+        };
+        match action {
+            A::Float(name) => self.layout_ops.push(LayoutOp::Float(panel(&name), [300.0, 120.0])),
+            A::Dock(name, left) => {
+                let side = if left { Side::Left } else { Side::Right };
+                self.layout_ops.push(LayoutOp::Place(panel(&name), side, usize::MAX));
+            }
+            A::Hide(name) => self.layout_ops.push(LayoutOp::Hide(panel(&name))),
+            A::Show(name) => {
+                self.rooms[self.room].show(panel(&name));
+                self.layout_dirty = true;
+            }
+            A::Room(n) => self.switch_room(n.saturating_sub(1)),
+            A::Tool(name) => match ALL_TOOLS.iter().find(|t| format!("{t:?}").eq_ignore_ascii_case(&name)) {
+                Some(t) => self.tool = *t,
+                None => stop(&format!("no tool named {name}")),
+            },
+            A::Window(name, on) => match name.as_str() {
+                "history" => self.show_history = on,
+                "shortcuts" => self.show_shortcuts = on,
+                "storyboard" => self.show_storyboard = on,
+                "groups" => self.group_edit = on.then(|| self.doc.groups.clone()),
+                "preferences" => self.show_prefs = on,
+                "xsheet" => self.show_xsheet = on,
+                "effects" => self.show_fx_stack = on,
+                "ai" => self.show_ai = on,
+                other => stop(&format!("no window named {other}")),
+            },
+            A::Shot(path) => {
+                ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(Default::default()));
+                self.script_shot = Some(path);
+            }
+            A::Crash => panic!("a script asked for this stop, to check the crash report"),
+            A::Quit => ctx.send_viewport_cmd(egui::ViewportCommand::Close),
+        }
+    }
+
     fn screenshot(&mut self, ctx: &egui::Context) {
         let mut saved = None;
         ctx.input(|i| {
@@ -7717,7 +7842,31 @@ impl eframe::App for AnimApp {
         }
     }
 
+    /// While a script plays, its clicks and keys are put among the window's events, and the
+    /// person's own are kept out.
+    fn raw_input_hook(&mut self, _ctx: &egui::Context, raw: &mut egui::RawInput) {
+        let Some(script) = &mut self.script else { return };
+        crate::script::drop_real_input(&mut raw.events);
+        // an action not done yet, a picture being saved or a pause holds the script
+        if self.script_do.is_some() || self.script_shot.is_some() {
+            return;
+        }
+        if self.script_sleep.is_some_and(|until| Instant::now() < until) {
+            return;
+        }
+        self.script_sleep = None;
+        match script.next() {
+            Some(crate::script::Step::Events(events)) => raw.events.extend(events),
+            Some(crate::script::Step::Do(action)) => self.script_do = Some(action),
+            Some(crate::script::Step::Sleep(secs)) => {
+                self.script_sleep = Some(Instant::now() + std::time::Duration::from_secs_f32(secs));
+            }
+            Some(crate::script::Step::Idle) | None => {}
+        }
+    }
+
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.script_tick(ctx);
         self.sync_audio();
         self.keys(ctx);
         if let Some(f) = &self.floating {
