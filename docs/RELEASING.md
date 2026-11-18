@@ -13,6 +13,13 @@ Toonlight follows [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`
 - **MAJOR** (1.0.0): changes that break something (project format, removed features).
 - Test versions get a suffix: `0.16.0-beta.1`. They are published as *pre-releases*.
 
+## Trying the packaging first
+
+The **Release** workflow can be started by hand (Actions → Release → Run workflow, or
+`gh workflow run release.yml`). It then runs the tests and builds the installers, which stay
+attached to the run as artifacts; nothing is published and no release is made. Do this before a
+tag when the packaging has not run for a while.
+
 ## Making a release
 
 1. Make sure CI is green on `main`.
@@ -35,7 +42,7 @@ Toonlight follows [Semantic Versioning](https://semver.org): `MAJOR.MINOR.PATCH`
 
 | System | What is built | Made with |
 |---|---|---|
-| Windows | `Toonlight_<version>_x64-setup.exe` (installer with Start-menu entry and uninstaller) | NSIS |
+| Windows | `toonlight_<version>_x64-setup.exe` (installer with Start-menu entry and uninstaller) | NSIS |
 | macOS | `Toonlight.app` inside `Toonlight_<version>_aarch64.dmg` | cargo-packager |
 | Linux | `.deb` and `.AppImage` | cargo-packager |
 

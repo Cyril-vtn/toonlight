@@ -6,6 +6,22 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+## [0.16.0-beta.1] — 2026-11-18 — first public test version
+
+The first version with installers for Windows, macOS and Linux. It is a **test version**: it has
+many features but few people have tried it yet, so expect rough edges and please report them.
+
+Known limits:
+
+- The installers are not signed: Windows ("Windows protected your PC") and macOS (right-click →
+  Open) warn at the first start. The README says how to get past the warning.
+- macOS: Apple Silicon only (no Intel build).
+- Graphics tablets: pen pressure, tilt and the eraser end are written for the three systems but
+  have not been tried with a real tablet yet.
+- Linux: in a Wayland session the app runs through XWayland (see below).
+
+What changed since 0.15.0:
+
 - **Pen tablets on Windows and Linux**: the pen's tilt, the direction it leans in, its rotation
   and its eraser end now work there as on macOS (brush connections, and the eraser end erases for
   the stroke). On Linux the pen's pressure is read too, which it was not before. Windows reads
