@@ -46,8 +46,9 @@ Installers for every stable version are on the
   thin row, a small picture of each layer's drawing.
 - **Undo history** with marks: jump back to any step, or to a state you marked.
 - **Light table** (onion skin), **flipping**, **view rotation and mirror**.
-- **Animated camera**, **shots and storyboard**, **sound**: several tracks per shot with
-  waveforms, volume, offset, fades and scrubbing, mixed into the MP4 and film exports.
+- **Animated camera** with a speed curve and motion blur, **shots and storyboard**, **sound**:
+  several tracks per shot with waveforms, volume, offset, fades and scrubbing, mixed into the MP4
+  and film exports.
 - **Effects** with live preview: blur, mosaic, noise, wave, brightness / contrast,
   hue / saturation, invert, colour key, luma key; a stack of effects per layer, animated with
   keys, that you can save as a preset or a file.
@@ -78,7 +79,8 @@ sudo apt install libgtk-3-dev libxkbcommon-dev libasound2-dev libxcb-render0-dev
 ```
 
 Start options: `--lang en` (fr, en, es, de, zh, ja), `--shortcuts`, `--storyboard`, `--groups`,
-`--history`, `--screenshot shot.png` (draws about 120 frames, saves a picture and quits),
+`--history`, `--tool camera` (the tool selected at start), `--screenshot shot.png` (draws about
+120 frames, saves a picture and quits),
 `--commands file` (runs AI commands, one JSON-RPC message per line, on the opened project),
 `--mcp` (AI server, no window), or a project file to open.
 

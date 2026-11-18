@@ -6,6 +6,14 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Camera speed profile** (camera tool settings): a curve sets the camera's speed over its whole
+  move, from the first key to the last — even, slow start, slow arrival, slow start and arrival,
+  or your own points (drag a point, click to add one, right-click to remove it).
+- **Camera motion blur**: the part of each frame's time during which the camera goes on moving
+  (0-100 %); a moving camera then smears the picture along its move, in the camera view,
+  `render_frame` and every export. A camera that stands still stays sharp.
+- AI (MCP): `camera` takes `profile` (a preset name or a list of points) and `motion_blur`.
+- New start option `--tool name` (the tool selected at start).
 - **Time ratio, retime and trim** (Layer menu): "Time ratio" stretches the layer — and the
   layers chosen with it, in one undo step — by a percentage (200 % = twice slower, 50 % = twice
   faster); "Retime the layer" gives every drawing the same exposure (on ones, on twos…); "Layer
