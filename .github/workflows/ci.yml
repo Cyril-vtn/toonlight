@@ -92,12 +92,11 @@ jobs:
         env:
           TOONLIGHT_PEN_LOG: 1
           GALLIUM_DRIVER: llvmpipe
-          MESA: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.7/mesa3d-26.2.7-release-msvc.7z
+          MESA: https://github.com/pal1000/mesa-dist-win/releases/download/26.2.7/mesa3d-26.2.7-release-mingw.7z
         run: |
           curl -sSL --retry 3 -o "$RUNNER_TEMP/mesa.7z" "$MESA"
           7z x "$RUNNER_TEMP/mesa.7z" -o"$RUNNER_TEMP/mesa" "x64/*.dll" -y > /dev/null
           cp "$RUNNER_TEMP/mesa/x64/opengl32.dll" "$RUNNER_TEMP/mesa/x64/libgallium_wgl.dll" target/debug/
-          cp "$RUNNER_TEMP/mesa/x64/libglapi.dll" target/debug/ 2> /dev/null || true
           export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings"
           ./target/debug/toonlight.exe --screenshot "$RUNNER_TEMP/toonlight-windows.png" > "$RUNNER_TEMP/start.log" 2>&1 || true
           cat "$RUNNER_TEMP/start.log"
