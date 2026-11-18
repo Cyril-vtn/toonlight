@@ -23,6 +23,8 @@ pub(crate) struct Server {
     pub(crate) active: usize,
     /// A layer copied with layer_copy (copy / cut), for paste.
     pub(crate) layer_clip: Option<crate::doc::LayerCopy>,
+    /// The project's own sound tracks, placed on the film (every shot end to end).
+    pub(crate) film_sounds: Vec<crate::sound::SoundTrack>,
 }
 
 impl Server {
@@ -34,7 +36,26 @@ impl Server {
             clips: vec![("Shot 1".into(), String::new(), None)],
             active: 0,
             layer_clip: None,
+            film_sounds: vec![],
         }
+    }
+
+    /// Every shot's animation, in order.
+    fn docs(&self) -> Vec<&Doc> {
+        (0..self.clips.len())
+            .map(|i| {
+                if i == self.active {
+                    &self.doc
+                } else {
+                    self.clips[i].2.as_ref().unwrap()
+                }
+            })
+            .collect()
+    }
+
+    /// The project's sound tracks as the active shot hears them (in its own time).
+    fn film_sounds_here(&self) -> Vec<crate::sound::SoundTrack> {
+        io::sounds_in_clip(&self.film_sounds, io::clip_start(&self.docs(), self.active))
     }
 
     fn select_clip(&mut self, i: usize) -> Result<(), String> {
@@ -280,6 +301,90 @@ impl Server {
         Ok(())
     }
 
+    /// The `sound_set` tool on a list of sound tracks: the active shot's, or the project's.
+    fn sound_set(&mut self, a: &Value, sounds: &mut Vec<crate::sound::SoundTrack>, project: bool) -> Result<Value, String> {
+        let n = sounds.len();
+        // a project track's frames are the film's, which runs at the first shot's rate
+        let fps = if project { self.docs()[0].fps } else { self.doc.fps }.max(1.0);
+        let track = match a.get("track").and_then(Value::as_u64) {
+            Some(t) if (t as usize) < n => Some(t as usize),
+            Some(t) => return Err(format!("sound track {t} does not exist ({n} tracks)")),
+            None => None,
+        };
+        if a.get("remove").and_then(Value::as_bool).unwrap_or(false) {
+            // one track, or every track when none is named; locked tracks stay
+            match track {
+                Some(t) if sounds[t].locked => {
+                    return Err(format!("sound track {t} is locked: unlock it first (locked: false)"));
+                }
+                Some(t) => {
+                    sounds.remove(t);
+                }
+                None => sounds.retain(|t| t.locked),
+            }
+            self.doc.dirty = true;
+            return Ok(text(format!("Sound removed; {} tracks left.", sounds.len())));
+        }
+        // which track the settings go to: the one named, a new one (add, or the first
+        // sound of the shot), else the first
+        let mut track = track.unwrap_or(0);
+        if let Some(p) = a.get("path").and_then(Value::as_str) {
+            let clip = crate::sound::Clip::load(std::path::Path::new(p))?;
+            let add = a.get("add").and_then(Value::as_bool).unwrap_or(false);
+            if add || n == 0 {
+                sounds.push(crate::sound::SoundTrack::new(p.into()));
+                track = sounds.len() - 1;
+            } else if sounds[track].locked {
+                return Err(format!("sound track {track} is locked: unlock it first (locked: false)"));
+            } else {
+                sounds[track] = crate::sound::SoundTrack::new(p.into());
+            }
+            let secs = clip.duration();
+            // only a shot can be made as long as its sound
+            if !project && a.get("fit_length").and_then(Value::as_bool).unwrap_or(false) {
+                let n = (secs * self.doc.fps).ceil() as usize;
+                self.doc.set_length(n.max(1));
+            }
+        }
+        self.doc.dirty = true;
+        let t = sounds.get_mut(track).ok_or("no sound yet: give a path (WAV or MP3)")?;
+        // a track is unlocked before the other changes of the same call, and locked after them
+        if a.get("locked").and_then(Value::as_bool) == Some(false) {
+            t.locked = false;
+        }
+        let changes = ["volume", "offset_frames", "mute", "fade_in", "fade_out", "color"];
+        if t.locked && changes.iter().any(|k| a.get(k).is_some()) {
+            return Err(format!("sound track {track} is locked: unlock it first (locked: false)"));
+        }
+        if let Some(v) = a.get("color").and_then(Value::as_u64) {
+            t.color = v.min(12) as u8;
+        }
+        if let Some(v) = a.get("volume").and_then(Value::as_f64) {
+            t.volume = (v as f32 / 100.0).clamp(0.0, 2.0);
+        }
+        if let Some(v) = a.get("offset_frames").and_then(Value::as_f64) {
+            t.offset = v as f32 / fps;
+        }
+        if let Some(v) = a.get("mute").and_then(Value::as_bool) {
+            t.mute = v;
+        }
+        if let Some(v) = a.get("fade_in").and_then(Value::as_f64) {
+            t.fade_in = (v as f32).max(0.0);
+        }
+        if let Some(v) = a.get("fade_out").and_then(Value::as_f64) {
+            t.fade_out = (v as f32).max(0.0);
+        }
+        if a.get("locked").and_then(Value::as_bool) == Some(true) {
+            sounds[track].locked = true;
+        }
+        Ok(text(format!(
+            "{} sound track {track} of {}: {:?}",
+            if project { "Project" } else { "Shot" },
+            sounds.len(),
+            sounds[track]
+        )))
+    }
+
     /// The undo history: how many steps are done, how many there are, and the marked states.
     fn history_json(&self) -> Value {
         let (done, undone) = self.doc.history_marks();
@@ -337,6 +442,7 @@ impl Server {
             "layers_bottom_to_top": layers,
             "paper": hex(self.doc.paper),
             "sounds": self.doc.sounds.iter().enumerate().map(|(i, t)| json!({"track": i, "file": t.path.display().to_string(), "volume": (t.volume * 100.0).round(), "offset_frames": (t.offset * self.doc.fps).round(), "mute": t.mute, "fade_in": t.fade_in, "fade_out": t.fade_out})).collect::<Vec<_>>(),
+            "project_sounds": self.film_sounds.iter().enumerate().map(|(i, t)| json!({"track": i, "file": t.path.display().to_string(), "volume": (t.volume * 100.0).round(), "offset_seconds": t.offset, "mute": t.mute, "fade_in": t.fade_in, "fade_out": t.fade_out, "locked": t.locked})).collect::<Vec<_>>(),
             "paper_texture": format!("{:?}", self.doc.paper_texture).to_lowercase(),
             "light_table": {
                 "active": self.doc.light.active,
@@ -376,11 +482,14 @@ impl Server {
                 self.clips = vec![("Shot 1".into(), String::new(), None)];
                 self.active = 0;
                 self.path = None;
+                self.film_sounds.clear();
                 Ok(text(format!("New project {w}x{h} at {fps} fps.")))
             }
             "project_open" => {
                 let p = PathBuf::from(str_arg(a, "path")?);
-                let mut list = io::open_project(&p)?;
+                let project = io::open_project(&p)?;
+                self.film_sounds = project.sounds;
+                let mut list = project.clips;
                 let first = list.remove(0);
                 self.doc = first.doc;
                 self.clips = vec![(if first.name.is_empty() { "Shot 1".into() } else { first.name }, first.notes, None)];
@@ -416,7 +525,7 @@ impl Server {
                         (d, name, c.1.as_str())
                     })
                     .collect();
-                io::save_project(&list, &p)?;
+                io::save_project(&list, &self.film_sounds, &p)?;
                 self.doc.dirty = false;
                 let msg = format!("Saved {}", p.display());
                 self.path = Some(p);
@@ -965,82 +1074,12 @@ impl Server {
                 Ok(text("Text written."))
             }
             "sound_set" => {
-                let n = self.doc.sounds.len();
-                let track = match a.get("track").and_then(Value::as_u64) {
-                    Some(t) if (t as usize) < n => Some(t as usize),
-                    Some(t) => return Err(format!("sound track {t} does not exist ({n} tracks)")),
-                    None => None,
-                };
-                if a.get("remove").and_then(Value::as_bool).unwrap_or(false) {
-                    // one track, or every track when none is named; locked tracks stay
-                    match track {
-                        Some(t) if self.doc.sounds[t].locked => {
-                            return Err(format!("sound track {t} is locked: unlock it first (locked: false)"));
-                        }
-                        Some(t) => {
-                            self.doc.sounds.remove(t);
-                        }
-                        None => self.doc.sounds.retain(|t| t.locked),
-                    }
-                    self.doc.dirty = true;
-                    return Ok(text(format!("Sound removed; {} tracks left.", self.doc.sounds.len())));
-                }
-                // which track the settings go to: the one named, a new one (add, or the first
-                // sound of the shot), else the first
-                let mut track = track.unwrap_or(0);
-                if let Some(p) = a.get("path").and_then(Value::as_str) {
-                    let clip = crate::sound::Clip::load(std::path::Path::new(p))?;
-                    let add = a.get("add").and_then(Value::as_bool).unwrap_or(false);
-                    if add || n == 0 {
-                        self.doc.sounds.push(crate::sound::SoundTrack::new(p.into()));
-                        track = self.doc.sounds.len() - 1;
-                    } else if self.doc.sounds[track].locked {
-                        return Err(format!("sound track {track} is locked: unlock it first (locked: false)"));
-                    } else {
-                        self.doc.sounds[track] = crate::sound::SoundTrack::new(p.into());
-                    }
-                    let secs = clip.duration();
-                    if a.get("fit_length").and_then(Value::as_bool).unwrap_or(false) {
-                        let n = (secs * self.doc.fps).ceil() as usize;
-                        self.doc.set_length(n.max(1));
-                    }
-                }
-                self.doc.dirty = true;
-                let t = self.doc.sounds.get_mut(track).ok_or("no sound yet: give a path (WAV or MP3)")?;
-                // a track is unlocked before the other changes of the same call, and locked after them
-                if a.get("locked").and_then(Value::as_bool) == Some(false) {
-                    t.locked = false;
-                }
-                let changes = ["volume", "offset_frames", "mute", "fade_in", "fade_out", "color"];
-                if t.locked && changes.iter().any(|k| a.get(k).is_some()) {
-                    return Err(format!("sound track {track} is locked: unlock it first (locked: false)"));
-                }
-                if let Some(v) = a.get("color").and_then(Value::as_u64) {
-                    t.color = v.min(12) as u8;
-                }
-                if let Some(v) = a.get("volume").and_then(Value::as_f64) {
-                    t.volume = (v as f32 / 100.0).clamp(0.0, 2.0);
-                }
-                if let Some(v) = a.get("offset_frames").and_then(Value::as_f64) {
-                    t.offset = v as f32 / self.doc.fps.max(1.0);
-                }
-                if let Some(v) = a.get("mute").and_then(Value::as_bool) {
-                    t.mute = v;
-                }
-                if let Some(v) = a.get("fade_in").and_then(Value::as_f64) {
-                    t.fade_in = (v as f32).max(0.0);
-                }
-                if let Some(v) = a.get("fade_out").and_then(Value::as_f64) {
-                    t.fade_out = (v as f32).max(0.0);
-                }
-                if a.get("locked").and_then(Value::as_bool) == Some(true) {
-                    self.doc.sounds[track].locked = true;
-                }
-                Ok(text(format!(
-                    "Sound track {track} of {}: {:?}",
-                    self.doc.sounds.len(),
-                    self.doc.sounds[track]
-                )))
+                // the project's own tracks (heard through the whole film), or the shot's
+                let project = a.get("project").and_then(Value::as_bool).unwrap_or(false);
+                let mut sounds = std::mem::take(if project { &mut self.film_sounds } else { &mut self.doc.sounds });
+                let answer = self.sound_set(a, &mut sounds, project);
+                *(if project { &mut self.film_sounds } else { &mut self.doc.sounds }) = sounds;
+                answer
             }
             "import_image" => {
                 self.place(a)?;
@@ -1729,7 +1768,7 @@ impl Server {
                     }
                     "mp4" => {
                         let ff = io::find_ffmpeg().ok_or("MP4 export needs FFmpeg installed (ffmpeg.org)")?;
-                        io::export_video(&self.doc, &p, &ff)?;
+                        io::export_video(&self.doc, &self.film_sounds_here(), &p, &ff)?;
                         Ok(text(format!("Video written: {}", p.display())))
                     }
                     "tiff" | "tga" | "jpeg" | "bmp" => {
@@ -1788,7 +1827,7 @@ impl Server {
                             }
                             _ => {
                                 let ff = io::find_ffmpeg().ok_or("MP4 export needs FFmpeg installed (ffmpeg.org)")?;
-                                io::export_film_video(&docs, &p, &ff)?;
+                                io::export_film_video(&docs, &self.film_sounds, &p, &ff)?;
                                 Ok(text(format!("Video of every shot written: {}", p.display())))
                             }
                         }
@@ -2066,8 +2105,8 @@ fn tools() -> Value {
         {"name": "draw_text", "title": "Write text", "description": "Write text (several lines allowed) with its top-left corner at a point. Size is the letter height in pixels (default 100); border in pixels (default 2, red, 0 = none); italic in percent; angle in degrees.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "text": {"type": "string"}, "at": point, "color": color,
             "size": {"type": "number"}, "border": {"type": "number"}, "border_color": color, "italic": {"type": "number"}, "angle": {"type": "number"}}, "required": ["text", "at"]}},
-        {"name": "sound_set", "title": "Sound tracks", "description": "The shot's sound tracks, played together. Give a WAV or MP3 path to set a track's file (add=true makes a new track; otherwise track, default 0, is replaced) and/or change that track's volume (0-200 %), offset in frames, mute and fades (seconds); remove=true removes the track (every track when none is named). fit_length makes the shot as long as the sound. Video exports include every track; the film export places each shot's sounds where the shot starts.",
-         "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "track": {"type": "integer", "description": "Sound track index from 0 (default 0)"}, "add": {"type": "boolean"}, "locked": {"type": "boolean", "description": "A locked track can't be changed, replaced or removed"}, "color": {"type": "integer", "description": "Timeline colour: 0 the usual blue, 1-12 a colour group's colour"}, "volume": {"type": "number"}, "offset_frames": {"type": "number"}, "mute": {"type": "boolean"},
+        {"name": "sound_set", "title": "Sound tracks", "description": "The shot's sound tracks, played together. Give a WAV or MP3 path to set a track's file (add=true makes a new track; otherwise track, default 0, is replaced) and/or change that track's volume (0-200 %), offset in frames, mute and fades (seconds); remove=true removes the track (every track when none is named). fit_length makes the shot as long as the sound. Video exports include every track; the film export places each shot's sounds where the shot starts. project=true works on the project's own tracks instead: they are placed on the whole film (offset_frames counted from the film's start, at the first shot's frame rate) and heard from one shot to the next, in the window, in a shot's video (the part that falls in it) and in the film export; project_info lists them as project_sounds.",
+         "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "project": {"type": "boolean", "description": "Work on the project's tracks (the whole film) instead of the active shot's"}, "track": {"type": "integer", "description": "Sound track index from 0 (default 0)"}, "add": {"type": "boolean"}, "locked": {"type": "boolean", "description": "A locked track can't be changed, replaced or removed"}, "color": {"type": "integer", "description": "Timeline colour: 0 the usual blue, 1-12 a colour group's colour"}, "volume": {"type": "number"}, "offset_frames": {"type": "number"}, "mute": {"type": "boolean"},
             "fade_in": {"type": "number"}, "fade_out": {"type": "number"}, "fit_length": {"type": "boolean"}, "remove": {"type": "boolean"}}}},
         {"name": "import_image", "title": "Import a picture", "description": "Place a PNG or JPEG picture into the drawing (scaled to fit unless scale, in percent, is given; centred unless center [x, y] is given).",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "path": {"type": "string"}, "scale": {"type": "number"}, "center": point}, "required": ["path"]}},
@@ -2431,6 +2470,28 @@ mod tests {
         assert_eq!(s.doc.sounds.len(), 1);
         ok(&mut s, "sound_set", json!({"remove": true}));
         assert!(s.doc.sounds.is_empty());
+        // the project's own tracks: placed on the film, kept apart from the shot's
+        ok(
+            &mut s,
+            "sound_set",
+            json!({"project": true, "path": wav, "offset_frames": 24, "volume": 50}),
+        );
+        assert!(s.doc.sounds.is_empty());
+        let fps = s.docs()[0].fps;
+        assert_eq!(
+            (s.film_sounds.len(), s.film_sounds[0].offset, s.film_sounds[0].volume),
+            (1, 24.0 / fps, 0.5)
+        );
+        assert_eq!(s.info()["project_sounds"][0]["offset_seconds"], json!(24.0 / fps));
+        // the active shot hears them in its own time; they are saved with the project
+        assert_eq!(s.film_sounds_here()[0].offset, 24.0 / fps);
+        let file = dir.join("film-sound.toonlight").display().to_string();
+        ok(&mut s, "project_save", json!({"path": file}));
+        ok(&mut s, "sound_set", json!({"project": true, "remove": true}));
+        assert!(s.film_sounds.is_empty());
+        ok(&mut s, "project_open", json!({"path": file}));
+        assert_eq!(s.film_sounds.len(), 1);
+        ok(&mut s, "sound_set", json!({"project": true, "remove": true}));
         // an effect stack saved to a file and put on another layer
         let fxfile = dir.join("stack.json").display().to_string();
         ok(

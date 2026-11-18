@@ -181,6 +181,12 @@ pub struct AnimApp {
     player: Player,
     peaks: Vec<Vec<f32>>,
     peaks_key: String,
+    /// The project's own sound tracks, placed on the film (every shot end to end) and heard
+    /// from one shot to the next; then the same three things as for the shot's tracks.
+    film_sounds: Vec<SoundTrack>,
+    film_audio: Vec<Option<Clip>>,
+    film_paths: Vec<PathBuf>,
+    film_peaks: Vec<Vec<f32>>,
     text: TextSettings,
     font: Option<ab_glyph::FontVec>,
     pressure: f32,
@@ -375,6 +381,10 @@ impl AnimApp {
             show_xsheet: false,
             audio: vec![],
             audio_paths: vec![],
+            film_sounds: vec![],
+            film_audio: vec![],
+            film_paths: vec![],
+            film_peaks: vec![],
             player: Player::default(),
             peaks: vec![],
             peaks_key: String::new(),
@@ -582,30 +592,62 @@ impl AnimApp {
     }
 
     /// Decode the sounds again when the shot's list of sound files changed (another shot, or an
-    /// AI command).
+    /// AI command); the same for the project's tracks.
     fn sync_audio(&mut self) {
         if !self.doc.sounds.iter().map(|t| &t.path).eq(self.audio_paths.iter()) {
             self.load_clip();
         }
+        if !self.film_sounds.iter().map(|t| &t.path).eq(self.film_paths.iter()) {
+            self.peaks_key.clear();
+            self.film_paths = self.film_sounds.iter().map(|t| t.path.clone()).collect();
+            let mut audio = vec![];
+            for t in &self.film_sounds {
+                match Clip::load(&t.path) {
+                    Ok(c) => audio.push(Some(c)),
+                    Err(e) => {
+                        self.status = trf("Son introuvable ou illisible : {}", &[&e]);
+                        audio.push(None);
+                    }
+                }
+            }
+            self.film_audio = audio;
+        }
     }
 
-    /// Pick a sound file: a new sound track, or the new file of track `replace`.
-    fn import_sound(&mut self, replace: Option<usize>) {
+    /// Where the current shot starts in the film, in seconds.
+    fn shot_start(&self) -> f32 {
+        let docs: Vec<&Doc> = (0..self.clips.len()).map(|i| self.clip_doc(i)).collect();
+        io::clip_start(&docs, self.active_clip)
+    }
+
+    /// The project's sound tracks as the current shot hears them (in its own time).
+    fn film_sounds_here(&self) -> Vec<SoundTrack> {
+        io::sounds_in_clip(&self.film_sounds, self.shot_start())
+    }
+
+    /// Pick a sound file: a new sound track, or the new file of track `replace`; of the shot,
+    /// or with `film` of the project.
+    fn import_sound(&mut self, replace: Option<usize>, film: bool) {
         if let Some(p) = rfd::FileDialog::new().add_filter(tr("Son"), &["wav", "mp3"]).pick_file() {
             match Clip::load(&p) {
                 Ok(c) => {
                     self.sync_audio();
                     let secs = c.duration();
-                    match replace.filter(|i| *i < self.doc.sounds.len()) {
+                    let (sounds, audio, paths) = if film {
+                        (&mut self.film_sounds, &mut self.film_audio, &mut self.film_paths)
+                    } else {
+                        (&mut self.doc.sounds, &mut self.audio, &mut self.audio_paths)
+                    };
+                    match replace.filter(|i| *i < sounds.len()) {
                         Some(i) => {
-                            self.doc.sounds[i].path = p.clone();
-                            self.audio[i] = Some(c);
-                            self.audio_paths[i] = p.clone();
+                            sounds[i].path = p.clone();
+                            audio[i] = Some(c);
+                            paths[i] = p.clone();
                         }
                         None => {
-                            self.doc.sounds.push(SoundTrack::new(p.clone()));
-                            self.audio.push(Some(c));
-                            self.audio_paths.push(p.clone());
+                            sounds.push(SoundTrack::new(p.clone()));
+                            audio.push(Some(c));
+                            paths.push(p.clone());
                         }
                     }
                     self.doc.dirty = true;
@@ -617,12 +659,15 @@ impl AnimApp {
         }
     }
 
-    /// Play the shot's sound tracks from the current frame; with `secs`, only that long.
+    /// Play the shot's sound tracks and the project's from the current frame; with `secs`, only
+    /// that long.
     fn play_sounds(&mut self, secs: Option<f32>) -> Result<(), String> {
+        let film = self.film_sounds_here();
         let pairs: Vec<(&Clip, &SoundTrack)> = self
             .audio
             .iter()
             .zip(&self.doc.sounds)
+            .chain(self.film_audio.iter().zip(&film))
             .filter_map(|(c, t)| c.as_ref().map(|c| (c, t)))
             .collect();
         let start = self.doc.frame as f32 / self.doc.fps.max(1.0);
@@ -1091,15 +1136,19 @@ impl AnimApp {
     /// Loudness of each sound track at each frame, for the timeline.
     fn update_peaks(&mut self) {
         self.sync_audio();
-        let key = format!("{:?}{}{}", self.doc.sounds, self.doc.fps, self.doc.frames);
+        let film = self.film_sounds_here();
+        let key = format!("{:?}{:?}{}{}", self.doc.sounds, film, self.doc.fps, self.doc.frames);
         if key != self.peaks_key {
             let (fps, frames) = (self.doc.fps.max(1.0), self.doc.frames);
-            self.peaks = self
-                .audio
-                .iter()
-                .zip(&self.doc.sounds)
-                .map(|(c, t)| c.as_ref().map(|c| c.peaks_per_frame(t, fps, frames)).unwrap_or_default())
-                .collect();
+            let peaks = |audio: &[Option<Clip>], sounds: &[SoundTrack]| -> Vec<Vec<f32>> {
+                audio
+                    .iter()
+                    .zip(sounds)
+                    .map(|(c, t)| c.as_ref().map(|c| c.peaks_per_frame(t, fps, frames)).unwrap_or_default())
+                    .collect()
+            };
+            self.peaks = peaks(&self.audio, &self.doc.sounds);
+            self.film_peaks = peaks(&self.film_audio, &film);
             self.peaks_key = key;
         }
     }
@@ -1121,7 +1170,7 @@ impl AnimApp {
                     "Une ligne par image, une colonne par calque : le numéro du dessin quand il commence, un trait tant qu'il est tenu.",
                 ));
                 let nl = self.doc.layers.len();
-                let has_sound = self.peaks.iter().any(|p| !p.is_empty());
+                let has_sound = self.peaks.iter().chain(&self.film_peaks).any(|p| !p.is_empty());
                 egui::ScrollArea::both().auto_shrink([false, false]).show(ui, |ui| {
                     egui::Grid::new("xsheet").striped(true).min_col_width(56.0).show(ui, |ui| {
                         ui.strong(tr("Image"));
@@ -1144,7 +1193,12 @@ impl AnimApp {
                             });
                             if has_sound {
                                 // the loudest of the tracks at this frame
-                                let v = self.peaks.iter().filter_map(|p| p.get(f)).fold(0.0f32, |m, v| m.max(*v));
+                                let v = self
+                                    .peaks
+                                    .iter()
+                                    .chain(&self.film_peaks)
+                                    .filter_map(|p| p.get(f))
+                                    .fold(0.0f32, |m, v| m.max(*v));
                                 let (r, _) = ui.allocate_exact_size(vec2(50.0, 14.0), Sense::hover());
                                 ui.painter().rect_filled(
                                     egui::Rect::from_min_size(r.min, vec2(50.0 * v, 14.0)),
@@ -1208,7 +1262,9 @@ impl AnimApp {
 
     fn open_path(&mut self, p: PathBuf) {
         match io::open_project(&p) {
-            Ok(mut list) => {
+            Ok(project) => {
+                self.film_sounds = project.sounds;
+                let mut list = project.clips;
                 let first = list.remove(0);
                 let mut clips = vec![ClipSlot {
                     name: first.name,
@@ -1255,7 +1311,9 @@ impl AnimApp {
             if self.doc.dirty {
                 self.status =
                     tr("Le fichier a été modifié par un autre programme ; vos changements non enregistrés sont gardés ici.").into();
-            } else if let Ok(mut list) = io::open_project(&p) {
+            } else if let Ok(project) = io::open_project(&p) {
+                self.film_sounds = project.sounds;
+                let mut list = project.clips;
                 let (frame, layer) = (self.doc.frame, self.doc.current_layer);
                 let active = self.active_clip.min(list.len() - 1);
                 let mut clips = vec![];
@@ -1377,7 +1435,7 @@ impl AnimApp {
                 }
             }
             let list = self.clip_list();
-            match io::save_project(&list, &p) {
+            match io::save_project(&list, &self.film_sounds, &p) {
                 Ok(()) => {
                     self.doc.dirty = false;
                     self.remove_recovery();
@@ -1443,7 +1501,9 @@ impl AnimApp {
             .map(|c| (c.name.clone(), c.notes.clone(), c.doc.take()))
             .collect();
         srv.active = self.active_clip;
+        srv.film_sounds = std::mem::take(&mut self.film_sounds);
         let answers = lines.iter().map(|line| srv.handle_line(line).unwrap_or_default()).collect();
+        self.film_sounds = std::mem::take(&mut srv.film_sounds);
         self.doc = std::mem::replace(&mut srv.doc, Doc::new(1, 1, 1.0));
         self.path = srv.path.clone();
         self.clips = srv
@@ -1477,7 +1537,7 @@ impl AnimApp {
                 let _ = std::fs::create_dir_all(d);
             }
             let list = self.clip_list();
-            let _ = io::save_project(&list, &p);
+            let _ = io::save_project(&list, &self.film_sounds, &p);
         }
     }
 
@@ -1946,7 +2006,7 @@ impl AnimApp {
             if p.extension().is_none() {
                 p.set_extension("mp4");
             }
-            match io::export_video(&self.doc, &p, &ff) {
+            match io::export_video(&self.doc, &self.film_sounds_here(), &p, &ff) {
                 Ok(()) => self.status = trf("Vidéo exportée : {}", &[&p.display()]),
                 Err(e) => self.status = trf("Échec de l'export vidéo : {}", &[&e]),
             }
@@ -2088,7 +2148,7 @@ impl AnimApp {
                         }
                         if ui.button(tr("Importer un son (WAV, MP3)…")).clicked() {
                             ui.close_menu();
-                            self.import_sound(None);
+                            self.import_sound(None, false);
                         }
                     });
                     ui.menu_button(tr("Exporter"), |ui| {
@@ -2278,7 +2338,7 @@ impl AnimApp {
                     ui.separator();
                     if ui.button(tr("Importer un son (WAV, MP3)…")).clicked() {
                         ui.close_menu();
-                        self.import_sound(None);
+                        self.import_sound(None, false);
                     }
                     if ui.checkbox(&mut self.cam_view, tr("Voir à travers la caméra")).changed() {
                         self.needs_full = true;
@@ -2792,9 +2852,10 @@ impl AnimApp {
 
     fn sound_panel(&mut self, ui: &mut egui::Ui) {
         self.sync_audio();
-        let mut remove = None;
-        let mut replace = None;
+        // what was asked for on a track: (of the project?, track, what)
+        let mut ask: Option<(bool, usize, TrackAsk)> = None;
         let mut changed = false;
+        let groups = self.doc.groups.clone();
         let fps = self.doc.fps.max(1.0);
         let many = self.doc.sounds.len() > 1;
         for (k, t) in self.doc.sounds.iter_mut().enumerate() {
@@ -2802,90 +2863,51 @@ impl AnimApp {
                 if k > 0 {
                     ui.separator();
                 }
-                let name = t.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
-                let title = if many { format!("{} · {name}", k + 1) } else { name };
-                ui.label(egui::RichText::new(title).monospace())
-                    .on_hover_text(t.path.display().to_string());
-                if self.audio.get(k).is_none_or(|c| c.is_none()) {
-                    ui.colored_label(Color32::from_rgb(255, 190, 80), tr("Fichier introuvable"));
+                let missing = self.audio.get(k).is_none_or(|c| c.is_none());
+                let (c, a) = sound_track_ui(ui, t, many.then_some(k + 1), missing, &groups, fps, false);
+                changed |= c;
+                if let Some(a) = a {
+                    ask = Some((false, k, a));
                 }
-                let colors = &self.doc.groups;
-                ui.horizontal(|ui| {
-                    changed |= ui
-                        .checkbox(&mut t.locked, tr("Verrouillée"))
-                        .on_hover_text(tr("Une piste verrouillée ne peut être ni modifiée ni retirée"))
-                        .changed();
-                    // the track's colour in the timeline: the usual blue, or a colour group's
-                    let now = sound_color(t.color, colors);
-                    ui.menu_button(egui::RichText::new("■").color(now), |ui| {
-                        ui.horizontal(|ui| {
-                            for c in 0..=12u8 {
-                                let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
-                                ui.painter().rect_filled(r, 3.0, sound_color(c, colors));
-                                if t.color == c {
-                                    ui.painter()
-                                        .rect_stroke(r, 3.0, Line::new(2.0_f32, Color32::WHITE), StrokeKind::Inside);
-                                }
-                                if resp.clicked() && !t.locked {
-                                    t.color = c;
-                                    changed = true;
-                                    ui.close_menu();
-                                }
-                            }
-                        });
-                    })
-                    .response
-                    .on_hover_text(tr("Couleur de la piste dans la timeline"));
-                });
-                let locked = t.locked;
-                ui.add_enabled_ui(!locked, |ui| {
-                    changed |= ui.checkbox(&mut t.mute, tr("Muet")).changed();
-                    let mut vol = t.volume * 100.0;
-                    if ui
-                        .add(egui::Slider::new(&mut vol, 0.0..=200.0).text(tr("Volume")).suffix(" %"))
-                        .changed()
-                    {
-                        t.volume = vol / 100.0;
-                        changed = true;
-                    }
-                    let mut off_frames = (t.offset * fps).round() as i32;
-                    ui.horizontal(|ui| {
-                        ui.label(tr("Décalage"));
-                        if ui
-                            .add(
-                                egui::DragValue::new(&mut off_frames)
-                                    .range(-100000..=100000)
-                                    .suffix(format!(" {}", tr("images"))),
-                            )
-                            .changed()
-                        {
-                            t.offset = off_frames as f32 / fps;
-                            changed = true;
-                        }
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label(tr("Fondu"));
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut t.fade_in).range(0.0..=60.0).speed(0.05).suffix(" s"))
-                            .on_hover_text(tr("Fondu d'entrée"))
-                            .changed();
-                        changed |= ui
-                            .add(egui::DragValue::new(&mut t.fade_out).range(0.0..=60.0).speed(0.05).suffix(" s"))
-                            .on_hover_text(tr("Fondu de sortie"))
-                            .changed();
-                    });
-                    ui.horizontal(|ui| {
-                        if ui.small_button(tr("Remplacer…")).clicked() {
-                            replace = Some(k);
-                        }
-                        if ui.small_button(tr("Retirer le son")).clicked() {
-                            remove = Some(k);
-                        }
-                    });
-                });
             });
         }
-        if !self.doc.sounds.is_empty() {
+        let add = if self.doc.sounds.is_empty() {
+            tr("Importer un son (WAV, MP3)…")
+        } else {
+            tr("Ajouter une piste son…")
+        };
+        if ui.button(add).clicked() {
+            self.import_sound(None, false);
+        }
+        // the project's own tracks, heard from one shot to the next
+        ui.separator();
+        ui.label(egui::RichText::new(tr("Pistes du projet")).strong()).on_hover_text(tr(
+            "Une piste du projet s'entend sur tout le film, d'un plan à l'autre : une musique, une voix off. Son décalage se compte depuis le début du film.",
+        ));
+        // the film runs at the first shot's frame rate
+        let film_fps = self.clip_doc(0).fps.max(1.0);
+        let many = self.film_sounds.len() > 1;
+        for (k, t) in self.film_sounds.iter_mut().enumerate() {
+            ui.push_id(("film-track", k), |ui| {
+                if k > 0 {
+                    ui.separator();
+                }
+                let missing = self.film_audio.get(k).is_none_or(|c| c.is_none());
+                let (c, a) = sound_track_ui(ui, t, many.then_some(k + 1), missing, &groups, film_fps, true);
+                changed |= c;
+                if let Some(a) = a {
+                    ask = Some((true, k, a));
+                }
+            });
+        }
+        if ui
+            .button(tr("Ajouter une piste au projet…"))
+            .on_hover_text(tr("Un son (WAV, MP3) pour tout le film"))
+            .clicked()
+        {
+            self.import_sound(None, true);
+        }
+        if !self.doc.sounds.is_empty() || !self.film_sounds.is_empty() {
             ui.separator();
             ui.horizontal(|ui| {
                 ui.label(tr("Son en glissant"));
@@ -2904,35 +2926,58 @@ impl AnimApp {
                 );
             });
         }
-        let add = if self.doc.sounds.is_empty() {
-            tr("Importer un son (WAV, MP3)…")
-        } else {
-            tr("Ajouter une piste son…")
-        };
-        if ui.button(add).clicked() {
-            self.import_sound(None);
-        }
         if changed {
             self.doc.dirty = true;
-            if self.playing {
-                self.start_sound();
-            }
-        }
-        if replace.is_some() {
-            self.import_sound(replace);
-        }
-        if let Some(k) = remove {
-            self.doc.sounds.remove(k);
-            if k < self.audio.len() {
-                self.audio.remove(k);
-                self.audio_paths.remove(k);
-            }
-            self.doc.dirty = true;
-            self.player.stop();
             self.peaks_key.clear();
             if self.playing {
                 self.start_sound();
             }
+        }
+        match ask {
+            Some((film, k, TrackAsk::Replace)) => self.import_sound(Some(k), film),
+            Some((film, k, TrackAsk::Remove)) => {
+                let (sounds, audio, paths) = if film {
+                    (&mut self.film_sounds, &mut self.film_audio, &mut self.film_paths)
+                } else {
+                    (&mut self.doc.sounds, &mut self.audio, &mut self.audio_paths)
+                };
+                sounds.remove(k);
+                if k < audio.len() {
+                    audio.remove(k);
+                    paths.remove(k);
+                }
+                self.doc.dirty = true;
+                self.player.stop();
+                self.peaks_key.clear();
+                if self.playing {
+                    self.start_sound();
+                }
+            }
+            Some((film, k, TrackAsk::Move)) => self.move_sound(film, k),
+            None => {}
+        }
+    }
+
+    /// Move a sound track from the shot to the project, or back, without changing when it is
+    /// heard: its place in time is counted from the film's start instead of the shot's.
+    fn move_sound(&mut self, film: bool, k: usize) {
+        let start = self.shot_start();
+        if film {
+            let mut t = self.film_sounds.remove(k);
+            t.offset -= start;
+            self.doc.sounds.push(t);
+        } else {
+            let mut t = self.doc.sounds.remove(k);
+            t.offset += start;
+            self.film_sounds.push(t);
+        }
+        // both lists changed: their sounds are read again
+        self.audio_paths.clear();
+        self.film_paths.clear();
+        self.sync_audio();
+        self.doc.dirty = true;
+        if self.playing {
+            self.start_sound();
         }
     }
 
@@ -4122,7 +4167,10 @@ impl AnimApp {
                             ui.close_menu();
                         }
                         if ui
-                            .add_enabled(self.audio.iter().any(|c| c.is_some()), egui::Button::new(tr("Le son")))
+                            .add_enabled(
+                                self.audio.iter().chain(&self.film_audio).any(|c| c.is_some()),
+                                egui::Button::new(tr("Le son")),
+                            )
                             .clicked()
                         {
                             self.tl_fit = Some(TlFit::Sound);
@@ -4332,11 +4380,13 @@ impl AnimApp {
                 TlFit::Sound => {
                     // from where the first sound starts to where the last one ends
                     let fps = self.doc.fps.max(1.0);
+                    let film = self.film_sounds_here();
                     let spans: Vec<(f32, f32)> = self
                         .audio
                         .iter()
                         .zip(&self.doc.sounds)
-                        .filter_map(|(c, t)| c.as_ref().map(|c| (t.offset.max(0.0), t.offset + c.duration())))
+                        .chain(self.film_audio.iter().zip(&film))
+                        .filter_map(|(c, t)| c.as_ref().map(|c| (t.offset.max(0.0), (t.offset + c.duration()).max(0.0))))
                         .collect();
                     if spans.is_empty() {
                         (0, nf)
@@ -4366,7 +4416,7 @@ impl AnimApp {
             self.tl_cell_shown = cell;
         }
         let max_x = (nf as f32 * cell - cells_w + cell).max(0.0);
-        let sound_rows = self.doc.sounds.len();
+        let sound_rows = self.doc.sounds.len() + self.film_sounds.len();
         // each row's height and its top (from the first row): the layers, then the sound tracks
         let heights: Vec<f32> = rows
             .iter()
@@ -4649,8 +4699,11 @@ impl AnimApp {
                 }
             }
         }
-        // sound track rows, under the layers
-        for (k, track) in self.doc.sounds.iter().enumerate() {
+        // sound track rows, under the layers: the shot's tracks, then the project's
+        let shot_tracks = self.doc.sounds.len();
+        for (k, track) in self.doc.sounds.iter().chain(&self.film_sounds).enumerate() {
+            // a project track: its number among them
+            let film = k.checked_sub(shot_tracks);
             let y = row_y(nl + k);
             let h = heights[nl + k];
             let p = painter.with_clip_rect(col_clip);
@@ -4660,11 +4713,20 @@ impl AnimApp {
             p.rect_filled(egui::Rect::from_min_size(rowrect.min, vec2(3.0, rowrect.height())), 0.0, track_col);
             let name = track.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
             let muted = track.mute;
-            let missing = self.audio.get(k).is_none_or(|c| c.is_none());
+            let (clip, peaks) = match film {
+                Some(i) => (self.film_audio.get(i), self.film_peaks.get(i)),
+                None => (self.audio.get(k), self.peaks.get(k)),
+            };
+            let missing = clip.is_none_or(|c| c.is_none());
+            let icon = if track.locked { "🔒" } else { "♪" };
+            let label = match film {
+                Some(_) => format!("{icon} {name} · {}", tr("projet")),
+                None => format!("{icon} {name}"),
+            };
             p.text(
                 pos2(area.left() + 10.0, y + h / 2.0),
                 egui::Align2::LEFT_CENTER,
-                format!("{} {name}", if track.locked { "🔒" } else { "♪" }),
+                label,
                 font.clone(),
                 if missing {
                     Color32::from_rgb(255, 190, 80)
@@ -4684,7 +4746,7 @@ impl AnimApp {
             let last = (((sx + cells_w) / cell).ceil() as usize + 1).min(nf);
             let wave = if muted { Color32::from_gray(110) } else { track_col };
             for f in first..last {
-                let v = self.peaks.get(k).and_then(|p| p.get(f)).copied().unwrap_or(0.0);
+                let v = peaks.and_then(|p| p.get(f)).copied().unwrap_or(0.0);
                 if v <= 0.0 {
                     continue;
                 }
@@ -6093,7 +6155,7 @@ impl AnimApp {
                 if p.extension().is_none() {
                     p.set_extension("mp4");
                 }
-                let r = io::export_film_video(&docs, &p, &ff);
+                let r = io::export_film_video(&docs, &self.film_sounds, &p, &ff);
                 self.status = match r {
                     Ok(()) => trf("Vidéo exportée : {}", &[&p.display()]),
                     Err(e) => trf("Échec de l'export vidéo : {}", &[&e]),
@@ -7476,6 +7538,7 @@ impl AnimApp {
             self.replace_doc(doc);
             self.clips = vec![ClipSlot::new(format!("{} 1", tr("Plan")), None)];
             self.active_clip = 0;
+            self.film_sounds.clear();
             self.path = None;
             self.status = trf("Nouveau projet {} × {}", &[&w, &h]);
             close = true;
@@ -7629,6 +7692,128 @@ impl eframe::App for AnimApp {
 }
 
 /// A sound track's colour in the timeline: 0 = the usual blue, 1-12 = that colour group's colour.
+/// What was asked for with a sound track's buttons in the Sound panel.
+enum TrackAsk {
+    Replace,
+    Remove,
+    /// From the shot to the project, or back.
+    Move,
+}
+
+/// One sound track's controls in the Sound panel (`number` when there are several): a shot's
+/// track, or with `film` one of the project's. `fps` turns its place in time into frames.
+/// Returns whether a setting changed, and what a button asked for.
+fn sound_track_ui(
+    ui: &mut egui::Ui,
+    t: &mut SoundTrack,
+    number: Option<usize>,
+    missing: bool,
+    groups: &[crate::doc::Group],
+    fps: f32,
+    film: bool,
+) -> (bool, Option<TrackAsk>) {
+    let mut changed = false;
+    let mut ask = None;
+    let name = t.path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let title = match number {
+        Some(n) => format!("{n} · {name}"),
+        None => name,
+    };
+    ui.label(egui::RichText::new(title).monospace())
+        .on_hover_text(t.path.display().to_string());
+    if missing {
+        ui.colored_label(Color32::from_rgb(255, 190, 80), tr("Fichier introuvable"));
+    }
+    ui.horizontal(|ui| {
+        changed |= ui
+            .checkbox(&mut t.locked, tr("Verrouillée"))
+            .on_hover_text(tr("Une piste verrouillée ne peut être ni modifiée ni retirée"))
+            .changed();
+        // the track's colour in the timeline: the usual blue, or a colour group's
+        let now = sound_color(t.color, groups);
+        ui.menu_button(egui::RichText::new("■").color(now), |ui| {
+            ui.horizontal(|ui| {
+                for c in 0..=12u8 {
+                    let (r, resp) = ui.allocate_exact_size(vec2(18.0, 18.0), Sense::click());
+                    ui.painter().rect_filled(r, 3.0, sound_color(c, groups));
+                    if t.color == c {
+                        ui.painter()
+                            .rect_stroke(r, 3.0, Line::new(2.0_f32, Color32::WHITE), StrokeKind::Inside);
+                    }
+                    if resp.clicked() && !t.locked {
+                        t.color = c;
+                        changed = true;
+                        ui.close_menu();
+                    }
+                }
+            });
+        })
+        .response
+        .on_hover_text(tr("Couleur de la piste dans la timeline"));
+    });
+    let locked = t.locked;
+    ui.add_enabled_ui(!locked, |ui| {
+        changed |= ui.checkbox(&mut t.mute, tr("Muet")).changed();
+        let mut vol = t.volume * 100.0;
+        if ui
+            .add(egui::Slider::new(&mut vol, 0.0..=200.0).text(tr("Volume")).suffix(" %"))
+            .changed()
+        {
+            t.volume = vol / 100.0;
+            changed = true;
+        }
+        let mut off_frames = (t.offset * fps).round() as i32;
+        ui.horizontal(|ui| {
+            ui.label(tr("Décalage"));
+            if ui
+                .add(
+                    egui::DragValue::new(&mut off_frames)
+                        .range(-1000000..=1000000)
+                        .suffix(format!(" {}", tr("images"))),
+                )
+                .changed()
+            {
+                t.offset = off_frames as f32 / fps;
+                changed = true;
+            }
+        });
+        ui.horizontal(|ui| {
+            ui.label(tr("Fondu"));
+            changed |= ui
+                .add(egui::DragValue::new(&mut t.fade_in).range(0.0..=60.0).speed(0.05).suffix(" s"))
+                .on_hover_text(tr("Fondu d'entrée"))
+                .changed();
+            changed |= ui
+                .add(egui::DragValue::new(&mut t.fade_out).range(0.0..=60.0).speed(0.05).suffix(" s"))
+                .on_hover_text(tr("Fondu de sortie"))
+                .changed();
+        });
+        ui.horizontal_wrapped(|ui| {
+            if ui.small_button(tr("Remplacer…")).clicked() {
+                ask = Some(TrackAsk::Replace);
+            }
+            if ui.small_button(tr("Retirer le son")).clicked() {
+                ask = Some(TrackAsk::Remove);
+            }
+            let (label, tip) = if film {
+                (
+                    tr("Passer au plan"),
+                    tr("La piste ne s'entend plus que dans ce plan, au même moment qu'avant."),
+                )
+            } else {
+                (
+                    tr("Passer au projet"),
+                    tr("La piste s'entend alors sur tout le film, d'un plan à l'autre, au même moment qu'avant."),
+                )
+            };
+            if ui.small_button(label).on_hover_text(tip).clicked() {
+                ask = Some(TrackAsk::Move);
+            }
+        });
+    });
+    (changed, ask)
+}
+
 /// The camera's speed profile as a curve to edit: the time from left to right, the part of the
 /// move done from bottom to top. Returns true when the profile changed.
 fn profile_editor(ui: &mut egui::Ui, cam: &mut crate::camera::Camera) -> bool {
