@@ -69,7 +69,7 @@ jobs:
           sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 libegl1 libxkbcommon-x11-0
           export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings"
           xvfb-run -a -s "-screen 0 1600x1000x24" \
-            ./target/debug/toonlight --screenshot "$RUNNER_TEMP/toonlight-linux.png" 2> "$RUNNER_TEMP/start.log" || true
+            ./target/debug/toonlight --screenshot "$RUNNER_TEMP/toonlight-linux.png" > "$RUNNER_TEMP/start.log" 2>&1 || true
           cat "$RUNNER_TEMP/start.log"
           test -s "$RUNNER_TEMP/toonlight-linux.png"
           grep -q "pen: X11: listening" "$RUNNER_TEMP/start.log"
@@ -80,7 +80,7 @@ jobs:
           TOONLIGHT_PEN_LOG: 1
         run: |
           export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings"
-          ./target/debug/toonlight --screenshot "$RUNNER_TEMP/toonlight-macos.png" 2> "$RUNNER_TEMP/start.log" || true
+          ./target/debug/toonlight --screenshot "$RUNNER_TEMP/toonlight-macos.png" > "$RUNNER_TEMP/start.log" 2>&1 || true
           cat "$RUNNER_TEMP/start.log"
           test -s "$RUNNER_TEMP/toonlight-macos.png"
           grep -q "pen: macOS: listening" "$RUNNER_TEMP/start.log"

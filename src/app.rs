@@ -1630,7 +1630,7 @@ impl AnimApp {
                                     take = Some(p.effects.clone());
                                     ui.close_menu();
                                 }
-                                if ui.small_button("✕").on_hover_text(tr("Supprimer ce préréglage")).clicked() {
+                                if ui.small_button("🗙").on_hover_text(tr("Supprimer ce préréglage")).clicked() {
                                     drop = Some(i);
                                 }
                             });
@@ -1718,7 +1718,7 @@ impl AnimApp {
                                 if ui.small_button("▼").clicked() {
                                     action = Some((i, 1));
                                 }
-                                if ui.small_button("✕").clicked() {
+                                if ui.small_button("🗙").clicked() {
                                     action = Some((i, 0));
                                 }
                             });
@@ -3775,7 +3775,7 @@ impl AnimApp {
             ));
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
-                    .small_button("✕")
+                    .small_button("🗙")
                     .on_hover_text(tr("Fermer le panneau (Fenêtres pour le rouvrir)"))
                     .clicked()
                 {
@@ -8064,7 +8064,11 @@ fn apply_theme(ctx: &egui::Context, t: &Theme) {
     v.widgets.active.bg_fill = t.selected;
     v.widgets.active.weak_bg_fill = t.selected;
     v.widgets.open.weak_bg_fill = t.selected;
-    ctx.set_visuals(v);
+    // the app has its own colour schemes: whether the computer is set to a light or a dark
+    // appearance, these are the colours used (otherwise the panels would follow the computer
+    // while the timeline and the canvas keep the scheme's)
+    ctx.set_visuals_of(egui::Theme::Dark, v.clone());
+    ctx.set_visuals_of(egui::Theme::Light, v);
 }
 
 /// The project shown at start: a ball bouncing over a ground line, to show the light table at work.

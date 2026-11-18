@@ -18,6 +18,12 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
   (it was upside down).
 - Fix (Linux): the app is now built with its X11 and Wayland graphics parts; without them the
   window could fail to open, above all under Wayland.
+- Fix: on a computer set to a light appearance, the panels turned light while the timeline and
+  the canvas kept the app's own colours. The app's colour scheme is now used whatever the
+  computer's setting.
+- Fix: the cross that closes a panel showed as an empty box on computers without an extra
+  Chinese / Japanese font (most Linux systems). A test now checks that every sign the interface
+  writes is in the fonts the app carries.
 - The automatic checks now start the real app on Linux (on a virtual screen) and on macOS, and
   keep a picture of it.
 - **Storyboard as a PDF, in three layouts** (Storyboard window > Export the storyboard): a grid
