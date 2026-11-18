@@ -6,6 +6,20 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Pen tablets on Windows and Linux**: the pen's tilt, the direction it leans in, its rotation
+  and its eraser end now work there as on macOS (brush connections, and the eraser end erases for
+  the stroke). On Linux the pen's pressure is read too, which it was not before. Windows reads
+  the pen from the window's pointer messages (Windows Ink); Linux reads the X server's devices,
+  so in a Wayland session the app now runs through XWayland (set `TOONLIGHT_WAYLAND=1` for a
+  native Wayland window, without pen values). Not yet tried with real tablets on any of the
+  three systems: reports are welcome. Starting with `TOONLIGHT_PEN_LOG=1` makes the app write
+  what it hears from the pen, to send with a report.
+- Fix (macOS): a pen leaning towards you now gives the same direction as on the other systems
+  (it was upside down).
+- Fix (Linux): the app is now built with its X11 and Wayland graphics parts; without them the
+  window could fail to open, above all under Wayland.
+- The automatic checks now start the real app on Linux (on a virtual screen) and on macOS, and
+  keep a picture of it.
 - **Storyboard as a PDF, in three layouts** (Storyboard window > Export the storyboard): a grid
   of cards (2 to 6 columns), one shot per line (the picture on the left, the notes beside it), or
   one shot per page; A4 or Letter, portrait or landscape; with or without the notes and each

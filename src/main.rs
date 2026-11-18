@@ -109,6 +109,19 @@ fn main() -> eframe::Result<()> {
             }));
         }
     }
+    // Linux and the BSDs: a pen's pressure and tilt are read through the X server (see
+    // tablet.rs), and under Wayland the window library does not hear pens at all yet. So in a
+    // Wayland session the app runs through XWayland, unless TOONLIGHT_WAYLAND is set.
+    #[cfg(all(unix, not(target_os = "macos")))]
+    {
+        let set = |name: &str| std::env::var_os(name).is_some_and(|v| !v.is_empty());
+        if set("WAYLAND_DISPLAY") && set("DISPLAY") && !set("TOONLIGHT_WAYLAND") {
+            options.event_loop_builder = Some(Box::new(|b| {
+                use winit::platform::x11::EventLoopBuilderExtX11;
+                b.with_x11();
+            }));
+        }
+    }
     options.viewport = viewport;
     options.run_and_return = true;
 
