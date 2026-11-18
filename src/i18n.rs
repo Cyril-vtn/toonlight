@@ -1046,6 +1046,10 @@ mod tests {
             include_str!("layout.rs"),
             include_str!("prefs.rs"),
             include_str!("psd.rs"),
+            include_str!("board.rs"),
+            include_str!("tablet.rs"),
+            include_str!("mcp.rs"),
+            include_str!("main.rs"),
         ];
         let mut missing = vec![];
         for src in sources {
@@ -1065,6 +1069,59 @@ mod tests {
             }
         }
         assert!(missing.is_empty(), "untranslated: {missing:?}");
+    }
+
+    /// Every sign the interface writes (arrows, icons, punctuation) must be in the fonts the
+    /// program carries: a computer without the extra Chinese / Japanese font would show a box
+    /// instead. Chinese and Japanese letters themselves are the only ones left to that font.
+    #[test]
+    fn every_sign_is_in_the_built_in_fonts() {
+        use ab_glyph::Font;
+        let defs = eframe::egui::FontDefinitions::default();
+        let fonts: Vec<ab_glyph::FontVec> = defs
+            .font_data
+            .values()
+            .filter_map(|d| ab_glyph::FontVec::try_from_vec_and_index(d.font.to_vec(), d.index).ok())
+            .collect();
+        assert!(!fonts.is_empty());
+        let sources = [
+            ("app.rs", include_str!("app.rs")),
+            ("board.rs", include_str!("board.rs")),
+            ("brush.rs", include_str!("brush.rs")),
+            ("camera.rs", include_str!("camera.rs")),
+            ("custom.rs", include_str!("custom.rs")),
+            ("doc.rs", include_str!("doc.rs")),
+            ("fx.rs", include_str!("fx.rs")),
+            ("i18n.rs", include_str!("i18n.rs")),
+            ("io.rs", include_str!("io.rs")),
+            ("keymap.rs", include_str!("keymap.rs")),
+            ("layout.rs", include_str!("layout.rs")),
+            ("prefs.rs", include_str!("prefs.rs")),
+            ("select.rs", include_str!("select.rs")),
+            ("settings.rs", include_str!("settings.rs")),
+            ("sound.rs", include_str!("sound.rs")),
+            ("text.rs", include_str!("text.rs")),
+        ];
+        // letters of Chinese and Japanese writing, with their own punctuation and wide forms
+        let east_asian = |c: char| matches!(c as u32, 0x2E80..=0x9FFF | 0xF900..=0xFAFF | 0xFE30..=0xFE4F | 0xFF00..=0xFFEF);
+        let mut missing: std::collections::BTreeMap<char, &str> = Default::default();
+        for (name, src) in sources {
+            // only what is written between quotes, outside the tests and the comments
+            let code = src.split("#[cfg(test)]").next().unwrap_or(src);
+            for line in code.lines().filter(|l| !l.trim_start().starts_with("//")) {
+                let mut quoted = false;
+                let mut before = ' ';
+                for c in line.chars() {
+                    if c == '"' && before != '\\' {
+                        quoted = !quoted;
+                    } else if quoted && !c.is_ascii() && !east_asian(c) && !fonts.iter().any(|f| f.glyph_id(c).0 != 0) {
+                        missing.insert(c, name);
+                    }
+                    before = c;
+                }
+            }
+        }
+        assert!(missing.is_empty(), "signs the built-in fonts lack: {missing:?}");
     }
 
     #[test]
