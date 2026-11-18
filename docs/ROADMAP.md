@@ -7,14 +7,14 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **58** done, **21** partial, **71** missing.
+Today: **61** done, **19** partial, **70** missing.
 
 ## Next (P1)
 
 1. Drawing: try the macOS pen pressure and tilt with real tablets; pen tilt on Windows and Linux.
-2. Layers: time ratio / retime; layer marks, collapse.
-3. Sound: tracks for the whole project.
-4. Undo marks; camera motion blur and speed profile; storyboard PDF styles.
+2. Sound: tracks for the whole project.
+3. Camera motion blur and speed profile.
+4. Storyboard PDF styles.
 
 ---
 
@@ -83,8 +83,8 @@ Today: **58** done, **21** partial, **71** missing.
 | Layer types: image (still) layer, video layer, CTG (colour) layer | ❌ | P2 |
 | New-layer presets (Anim, Background, Colo & Texture, Duplicate structure) | ❌ | P2 |
 | Background mode (none, colour, checker) per layer | ❌ | P3 |
-| Layer marks, collapse, thumbnails, icon size | ❌ | P3 |
-| Stretch / shift / slide / split a layer (done); resize, time ratio, retime | 🟡 | P2 |
+| Collapsed layers, layer thumbnails, row (icon) size in the timeline | ✅ | — |
+| Stretch (to a length or by a time ratio), retime, trim, shift, slide, split a layer | ✅ | — |
 | Pick layer under the cursor | ❌ | P3 |
 
 ## 4. Timeline, exposures and instances
@@ -132,7 +132,7 @@ Today: **58** done, **21** partial, **71** missing.
 | Fast playback (every core, effects prepared ahead) | ✅ | — |
 | Custom panels (buttons running commands / scripts) | ❌ | P3 |
 | Colour schemes, save your own | 🟡 | P3 |
-| Undo history panel, multi-undo, undo marks | 🟡 | P2 |
+| Undo history panel, multi-undo, undo marks | ✅ | — |
 | Stopwatch (time an action) | ❌ | P3 |
 
 ## 7. Colour

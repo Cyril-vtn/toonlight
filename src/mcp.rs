@@ -280,6 +280,19 @@ impl Server {
         Ok(())
     }
 
+    /// The undo history: how many steps are done, how many there are, and the marked states.
+    fn history_json(&self) -> Value {
+        let (done, undone) = self.doc.history_marks();
+        let marks: Vec<usize> = done
+            .iter()
+            .chain(&undone)
+            .enumerate()
+            .filter(|(_, m)| **m)
+            .map(|(i, _)| i + 1)
+            .collect();
+        json!({"step": done.len(), "steps": done.len() + undone.len(), "marks": marks})
+    }
+
     fn info(&self) -> Value {
         let layers: Vec<Value> = self
             .doc
@@ -298,6 +311,7 @@ impl Server {
                     "color_group": self.doc.group_of(l.group).map(|i| json!(i)).unwrap_or_else(|| json!(hex(l.group))),
                     "light_table": l.onion,
                     "selected": l.selected,
+                    "collapsed": l.collapsed,
                     "drawings_start_at_frames": self.doc.keys(i).iter().map(|k| k.0).collect::<Vec<_>>(),
                     "drawing_names": l.names.iter().filter_map(|(id, n)| l.cels.iter().position(|c| *c == Some(*id)).map(|f| (f.to_string(), json!(n)))).collect::<serde_json::Map<_, _>>(),
                     "image_marks": self.doc.keys(i).iter().filter_map(|(f, id)| l.marks.get(id).map(|m| (f.to_string(), json!(m)))).collect::<serde_json::Map<_, _>>(),
@@ -319,6 +333,7 @@ impl Server {
             "mark_in": self.doc.mark_in,
             "mark_out": self.doc.mark_out,
             "notes": self.doc.notes.iter().map(|(f, t)| (f.to_string(), json!(t))).collect::<serde_json::Map<_, _>>(),
+            "history": self.history_json(),
             "layers_bottom_to_top": layers,
             "paper": hex(self.doc.paper),
             "sounds": self.doc.sounds.iter().enumerate().map(|(i, t)| json!({"track": i, "file": t.path.display().to_string(), "volume": (t.volume * 100.0).round(), "offset_frames": (t.offset * self.doc.fps).round(), "mute": t.mute, "fade_in": t.fade_in, "fade_out": t.fade_out})).collect::<Vec<_>>(),
@@ -499,6 +514,9 @@ impl Server {
                 if let Some(v) = a.get("stencil").and_then(Value::as_bool) {
                     layer.stencil = v;
                 }
+                if let Some(v) = a.get("collapsed").and_then(Value::as_bool) {
+                    layer.collapsed = v;
+                }
                 for (key, slot) in [("before", &mut layer.pre), ("after", &mut layer.post)] {
                     if let Some(v) = a.get(key).and_then(Value::as_str) {
                         *slot = crate::doc::Behavior::from_name(v).ok_or("before / after is none, repeat, pingpong or hold")?;
@@ -640,11 +658,31 @@ impl Server {
                         Ok(text(format!("Cells are now at frames {a0}..{b0}.")))
                     }
                     "stretch" => {
-                        let n = a.get("frames").and_then(Value::as_u64).ok_or("frames is missing")? as usize;
+                        if let Some(ratio) = a.get("ratio").and_then(Value::as_f64) {
+                            // a time ratio in percent, for one layer or several together
+                            let layers = self.layers_arg(a)?;
+                            let n = self.doc.stretch_layers_by(&layers, ratio as f32 / 100.0);
+                            if n == 0 {
+                                return Err("nothing to stretch: the layers are locked or empty, or the ratio changes nothing".into());
+                            }
+                            return Ok(text(format!("{n} layer(s) stretched to {ratio} %; {} frames now.", self.doc.frames)));
+                        }
+                        let n = a.get("frames").and_then(Value::as_u64).ok_or("frames (or ratio) is missing")? as usize;
                         if !self.doc.stretch_layer(l, n) {
                             return Err("nothing to stretch on this layer, or it is locked".into());
                         }
                         Ok(text(format!("Layer {l} now lasts {n} frames.")))
+                    }
+                    "retime" => {
+                        let n = a.get("frames").and_then(Value::as_u64).ok_or("frames is missing")? as usize;
+                        let last = self.doc.retime_layer(l, n).ok_or("nothing to retime on this layer, or it is locked")?;
+                        Ok(text(format!("Every drawing of layer {l} now lasts {} frame(s); the layer ends at frame {last}.", n.max(1))))
+                    }
+                    "trim_start" => {
+                        if !self.doc.trim_layer_start(l, from) {
+                            return Err("the layer can't start there: pick a frame after its first drawing and not after its end (and unlock it)".into());
+                        }
+                        Ok(text(format!("Layer {l} now starts at frame {from}.")))
                     }
                     "repeat" => {
                         let times = a.get("frames").and_then(Value::as_u64).unwrap_or(1) as usize;
@@ -1583,8 +1621,40 @@ impl Server {
                     json!({"palette": self.doc.palette.iter().map(|c| hex(*c)).collect::<Vec<_>>()}).to_string(),
                 ))
             }
-            "undo" => Ok(text(if self.doc.undo() { "Undone." } else { "Nothing to undo." })),
-            "redo" => Ok(text(if self.doc.redo() { "Redone." } else { "Nothing to redo." })),
+            "undo" => {
+                let flag = |k: &str| a.get(k).and_then(Value::as_bool).unwrap_or(false);
+                if flag("mark") {
+                    // put a mark on the current state, or remove it
+                    let step = self.doc.history_step();
+                    if step == 0 {
+                        return Err("nothing to mark: the history is empty".into());
+                    }
+                    let on = self.doc.toggle_undo_mark(step);
+                    return Ok(text(format!(
+                        "Step {step} is {} marked. {}",
+                        if on { "now" } else { "no longer" },
+                        self.history_json()
+                    )));
+                }
+                if flag("to_mark") {
+                    let step = self.doc.undo_mark_from_here(false).ok_or("no undo mark before this state")?;
+                    self.doc.go_to_step(step);
+                    return Ok(text(format!("Back at the mark of step {step}. {}", self.history_json())));
+                }
+                if let Some(step) = a.get("to_step").and_then(Value::as_u64) {
+                    self.doc.go_to_step(step as usize);
+                    return Ok(text(format!("Now at step {}. {}", self.doc.history_step(), self.history_json())));
+                }
+                Ok(text(if self.doc.undo() { "Undone." } else { "Nothing to undo." }))
+            }
+            "redo" => {
+                if a.get("to_mark").and_then(Value::as_bool).unwrap_or(false) {
+                    let step = self.doc.undo_mark_from_here(true).ok_or("no undo mark after this state")?;
+                    self.doc.go_to_step(step);
+                    return Ok(text(format!("Forward at the mark of step {step}. {}", self.history_json())));
+                }
+                Ok(text(if self.doc.redo() { "Redone." } else { "Nothing to redo." }))
+            }
             "render_frame" => {
                 let f = self.frame_arg(a)?;
                 let onion = a.get("light_table").and_then(Value::as_bool).unwrap_or(false);
@@ -1929,8 +1999,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "set", "add", "remove", "load", "save"]}, "colors": {"type": "array", "items": color}, "color": color, "index": {"type": "integer"}, "path": {"type": "string"}}}},
         {"name": "layer_add", "title": "Add layer", "description": "Add a layer above the current one; it becomes current.",
          "inputSchema": {"type": "object", "properties": {"name": {"type": "string"}}}},
-        {"name": "layer_set", "title": "Change layer", "description": "Rename a layer or change its visibility, lock, light table, stencil (its drawing protects the other layers from paint), opacity (0-100), blending mode or colour group; end (last frame of the layer's own animation, null = to the end) with what it shows before its first drawing and after its end (before / after: none, repeat, pingpong, hold).",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "name": {"type": "string"}, "visible": {"type": "boolean"}, "locked": {"type": "boolean"}, "stencil": {"type": "boolean"},
+        {"name": "layer_set", "title": "Change layer", "description": "Rename a layer or change its visibility, lock, light table, stencil (its drawing protects the other layers from paint), opacity (0-100), blending mode or colour group; collapsed (a thin row in the timeline); end (last frame of the layer's own animation, null = to the end) with what it shows before its first drawing and after its end (before / after: none, repeat, pingpong, hold).",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "name": {"type": "string"}, "visible": {"type": "boolean"}, "locked": {"type": "boolean"}, "stencil": {"type": "boolean"}, "collapsed": {"type": "boolean"},
             "end": {"type": ["integer", "null"]}, "before": {"type": "string", "enum": ["none", "repeat", "pingpong", "hold"]}, "after": {"type": "string", "enum": ["none", "repeat", "pingpong", "hold"]}, "auto_break": {"type": "boolean", "description": "Painting on a held cell makes a new drawing there (project-wide, default true)"}, "auto_stretch": {"type": "boolean", "description": "Painting after a layer's end makes it longer (project-wide, default true); off, painting there is refused"},
             "light_table": {"type": "boolean"}, "opacity": {"type": "number"}, "blend": {"type": "string", "enum": blends},
             "color_group": {"description": "A group number 0-12 (0 = no colour; 1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white) or a colour", "oneOf": [{"type": "integer"}, {"type": "string"}, {"type": "array", "items": {"type": "integer"}}]}}}},
@@ -1944,9 +2014,9 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"layer": layer, "direction": {"type": "string", "enum": ["up", "down"]}}, "required": ["direction"]}},
         {"name": "frame_add", "title": "Add frame", "description": "After the given frame on a layer: a new blank drawing, a duplicate of the drawing, or hold the drawing one more frame. Moves to the new frame.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "kind": {"type": "string", "enum": ["blank", "duplicate", "hold"]}}}},
-        {"name": "timing", "title": "Timing", "description": "Timing of a layer's cells from frame `from` to `to` (default: the current frame): set_exposure (every drawing lasts `frames` frames), add_exposures / remove_exposures (hold the drawing at `from` `frames` more or less), move_cells (`by` frames, + = later), delete_cells, repeat (`frames` times, mode loop / pingpong / random), stretch (the layer to `frames` frames), set_number (exposure sheet: frames from..to show drawing `number`), name_drawing (`name`), bookmark (toggle at `from`), mark_in / mark_out (play range start / end at `from`; `clear` removes it), mark_image (give the drawings shown at from..to the colour `mark` 1-12, as keys / breakdowns / in-betweens; 0 removes it), note (write `text` on the timeline at `from`; empty removes it), insert_tweens (`frames` in-between drawings after the drawing at `from`, before the layer's next drawing; each is a cross-fade of the two unless mix is false), shift (move the layer's whole animation `by` frames, + = later; `layers` moves several together; earlier stops at the first frame), slide (move the drawings `by` frames inside the layer, which keeps its first and last frame), split (cut the layer in two at `from`: the rest goes to a new layer above).",
-         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["set_exposure", "add_exposures", "remove_exposures", "move_cells", "delete_cells", "repeat", "stretch", "set_number", "name_drawing", "bookmark", "mark_in", "mark_out", "mark_image", "note", "insert_tweens", "shift", "slide", "split"]}, "layers": {"type": "array", "items": {"type": "integer"}}, "mark": {"type": "integer", "description": "For mark_image: colour 1-12 (1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white), 0 = no mark"}, "text": {"type": "string"}, "mix": {"type": "boolean"}, "number": {"description": "For set_number: the drawing number shown (as typed in the exposure sheet; a new number makes a new drawing; empty or \"-\" = none)", "oneOf": [{"type": "integer"}, {"type": "string"}]}, "mode": {"type": "string", "enum": ["loop", "pingpong", "random"]},
-            "from": frame, "to": frame, "frames": {"type": "integer"}, "by": {"type": "integer"}, "name": {"type": "string"}, "clear": {"type": "boolean"}}, "required": ["action"]}},
+        {"name": "timing", "title": "Timing", "description": "Timing of a layer's cells from frame `from` to `to` (default: the current frame): set_exposure (every drawing lasts `frames` frames), add_exposures / remove_exposures (hold the drawing at `from` `frames` more or less), move_cells (`by` frames, + = later), delete_cells, repeat (`frames` times, mode loop / pingpong / random), stretch (the layer to `frames` frames, or by `ratio` percent: 200 = twice slower, 50 = twice faster; with `layers`, several layers by the same ratio), retime (every drawing of the layer lasts `frames` frames: 1 = on ones, 2 = on twos), trim_start (the layer starts at `from`: what came before is removed), set_number (exposure sheet: frames from..to show drawing `number`), name_drawing (`name`), bookmark (toggle at `from`), mark_in / mark_out (play range start / end at `from`; `clear` removes it), mark_image (give the drawings shown at from..to the colour `mark` 1-12, as keys / breakdowns / in-betweens; 0 removes it), note (write `text` on the timeline at `from`; empty removes it), insert_tweens (`frames` in-between drawings after the drawing at `from`, before the layer's next drawing; each is a cross-fade of the two unless mix is false), shift (move the layer's whole animation `by` frames, + = later; `layers` moves several together; earlier stops at the first frame), slide (move the drawings `by` frames inside the layer, which keeps its first and last frame), split (cut the layer in two at `from`: the rest goes to a new layer above).",
+         "inputSchema": {"type": "object", "properties": {"layer": layer, "action": {"type": "string", "enum": ["set_exposure", "add_exposures", "remove_exposures", "move_cells", "delete_cells", "repeat", "stretch", "retime", "trim_start", "set_number", "name_drawing", "bookmark", "mark_in", "mark_out", "mark_image", "note", "insert_tweens", "shift", "slide", "split"]}, "layers": {"type": "array", "items": {"type": "integer"}}, "mark": {"type": "integer", "description": "For mark_image: colour 1-12 (1 red, 2 orange, 3 yellow, 4 lime, 5 green, 6 teal, 7 blue, 8 indigo, 9 violet, 10 pink, 11 plum, 12 white), 0 = no mark"}, "text": {"type": "string"}, "mix": {"type": "boolean"}, "number": {"description": "For set_number: the drawing number shown (as typed in the exposure sheet; a new number makes a new drawing; empty or \"-\" = none)", "oneOf": [{"type": "integer"}, {"type": "string"}]}, "mode": {"type": "string", "enum": ["loop", "pingpong", "random"]},
+            "from": frame, "to": frame, "frames": {"type": "integer"}, "ratio": {"type": "number", "description": "For stretch: the new length in percent of the old one"}, "by": {"type": "integer"}, "name": {"type": "string"}, "clear": {"type": "boolean"}}, "required": ["action"]}},
         {"name": "frame_remove", "title": "Remove frame", "description": "Remove a layer's cell at a frame (later cells move left), or hold its drawing one frame less.",
          "inputSchema": {"type": "object", "properties": {"layer": layer, "frame": frame, "kind": {"type": "string", "enum": ["cell", "hold"]}}}, "annotations": {"destructiveHint": true}},
         {"name": "draw_stroke", "title": "Draw a stroke", "description": "Paint a stroke through points with a brush tool (aspect, angle and connections shape the dab like the tool settings). Points are [x, y] or [x, y, pressure 0-1] (pressure changes the size, and the power with pressure_power). Size is the brush radius in pixels; power and opacity are 0-100 (defaults per tool, e.g. pen 20/100/100, airbrush 10/30/100). mode mixes the paint with the drawing (color, behind, light, shade, erase, tint, colorize, negative, saturate, unsaturate, multiply, screen, diff, dodge, burn, lighten, darken); preserve_transparency paints only over what is drawn; stencil layers protect their shapes (stencil_inside paints only inside them).",
@@ -2001,8 +2071,10 @@ fn tools() -> Value {
             "keys": {"type": "array", "items": {"type": "object", "properties": {"frame": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}, "zoom": {"type": "number"}, "rotation": {"type": "number"}}, "required": ["frame"]}}}}},
         {"name": "shot", "title": "Shots (storyboard)", "description": "A project can hold several shots (clips) played one after the other. action: list, add (new empty shot after the active one, becomes active), duplicate (copy of the active shot), select (index), delete (index), rename (index, name, notes). Every other tool works on the active shot; project_save keeps them all.",
          "inputSchema": {"type": "object", "properties": {"action": {"type": "string", "enum": ["list", "add", "duplicate", "select", "delete", "rename"]}, "index": {"type": "integer"}, "name": {"type": "string"}, "notes": {"type": "string"}}}},
-        {"name": "undo", "title": "Undo", "description": "Undo the last change.", "inputSchema": {"type": "object", "properties": {}}},
-        {"name": "redo", "title": "Redo", "description": "Redo the last undone change.", "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "undo", "title": "Undo", "description": "Undo the last change. Undo marks: mark=true puts a mark on the current state (or removes it), a place to come back to in one go; to_mark=true goes back to the nearest mark before the current state; to_step goes to the state after that many steps of the history (0 = the start). project_info lists the history and its marks.",
+         "inputSchema": {"type": "object", "properties": {"mark": {"type": "boolean"}, "to_mark": {"type": "boolean"}, "to_step": {"type": "integer"}}}},
+        {"name": "redo", "title": "Redo", "description": "Redo the last undone change; to_mark=true goes forward to the nearest undo mark after the current state.",
+         "inputSchema": {"type": "object", "properties": {"to_mark": {"type": "boolean"}}}},
         {"name": "render_frame", "title": "See a frame", "description": "Render a frame as a PNG picture to look at (optionally with the light table). With the camera on, it shows what the camera sees unless whole_canvas is true.",
          "inputSchema": {"type": "object", "properties": {"frame": frame, "light_table": {"type": "boolean"}, "whole_canvas": {"type": "boolean"}, "max_size": {"type": "integer"}}}, "annotations": {"readOnlyHint": true}},
         {"name": "export", "title": "Export", "description": "Export the animation: png (a folder of numbered pictures), gif, mp4 (needs FFmpeg), after_effects (a folder with JSON + pictures), psd (the current frame, one Photoshop layer per layer plus the paper), tiff / tga / jpeg / bmp (a folder of pictures), storyboard (a folder with a web page, one card per shot with its first picture, name, notes and length; print it to PDF from a browser), film_png / film_mp4 (every shot one after the other).",
@@ -2205,6 +2277,36 @@ mod tests {
         ok(&mut s, "layer_merge", json!({"what": "selected", "layers": [0, 1]}));
         assert_eq!(s.doc.layers.len(), n);
         assert_eq!(s.doc.keys(0)[1].0, 3, "the two halves are one layer again");
+        // time ratio, retime, trim the start, collapse
+        let before: Vec<usize> = s.doc.keys(0).iter().map(|k| k.0).collect();
+        ok(&mut s, "timing", json!({"action": "stretch", "layer": 0, "ratio": 200}));
+        assert_eq!(s.doc.keys(0)[1].0, before[1] * 2);
+        ok(&mut s, "undo", json!({}));
+        ok(&mut s, "timing", json!({"action": "retime", "layer": 0, "frames": 3}));
+        assert_eq!(s.doc.keys(0)[1].0 - s.doc.keys(0)[0].0, 3);
+        ok(&mut s, "timing", json!({"action": "trim_start", "layer": 0, "from": 4}));
+        assert_eq!(s.doc.keys(0)[0].0, 4);
+        ok(&mut s, "undo", json!({}));
+        ok(&mut s, "undo", json!({}));
+        assert_eq!(s.doc.keys(0).iter().map(|k| k.0).collect::<Vec<_>>(), before);
+        ok(&mut s, "layer_set", json!({"layer": 0, "collapsed": true}));
+        assert!(s.doc.layers[0].collapsed);
+        ok(&mut s, "layer_set", json!({"layer": 0, "collapsed": false}));
+        // undo marks: mark a state, change things, come back to it in one go
+        ok(&mut s, "undo", json!({"mark": true}));
+        let marked = s.doc.history_step();
+        let layers = s.doc.layers.len();
+        ok(&mut s, "layer_add", json!({}));
+        ok(&mut s, "layer_add", json!({}));
+        ok(&mut s, "undo", json!({"to_mark": true}));
+        assert_eq!((s.doc.history_step(), s.doc.layers.len()), (marked, layers));
+        ok(&mut s, "redo", json!({}));
+        ok(&mut s, "undo", json!({"mark": true}));
+        ok(&mut s, "undo", json!({"to_step": marked}));
+        ok(&mut s, "redo", json!({"to_mark": true}));
+        assert_eq!(s.doc.layers.len(), layers + 1);
+        assert_eq!(s.info()["history"]["marks"], json!([marked, marked + 1]));
+        ok(&mut s, "undo", json!({"to_step": marked}));
         ok(&mut s, "camera", json!({"lock_x": true, "keys": [{"frame": 0, "x": 5, "y": 6}]}));
         assert!(s.doc.camera.lock_x && (s.doc.camera.keys[0].x - 32.0).abs() < 0.01);
         ok(&mut s, "palette", json!({"action": "set", "colors": ["#102030", [1, 2, 3]]}));

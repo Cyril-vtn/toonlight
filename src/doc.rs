@@ -94,6 +94,9 @@ pub struct Layer {
     /// Selected together with the current layer, for actions on several layers (not saved).
     #[serde(skip)]
     pub selected: bool,
+    /// Shown as a thin row in the timeline, to leave room for the other layers.
+    #[serde(default)]
+    pub collapsed: bool,
 }
 
 impl Layer {
@@ -117,6 +120,7 @@ impl Layer {
             fx: vec![],
             marks: Default::default(),
             selected: false,
+            collapsed: false,
         }
     }
 }
@@ -521,6 +525,10 @@ pub struct Doc {
     pub stretch_asked: Option<(usize, usize)>,
     undo: Vec<Undo>,
     redo: Vec<Undo>,
+    /// Undo marks: one per step of `undo` and of `redo`, true when the state reached after that
+    /// step is marked (a place to come back to in one go).
+    undo_marks: Vec<bool>,
+    redo_marks: Vec<bool>,
     pub dirty: bool,
 }
 
@@ -552,6 +560,8 @@ impl Doc {
             stretch_asked: None,
             undo: vec![],
             redo: vec![],
+            undo_marks: vec![],
+            redo_marks: vec![],
             dirty: false,
         };
         let id = d.new_drawing();
@@ -725,13 +735,16 @@ impl Doc {
     // ---------- undo ----------
     fn push(&mut self, u: Undo) {
         self.undo.push(u);
+        self.undo_marks.push(false);
         let mut total: usize = self.undo.iter().map(Undo::bytes).sum();
         let limit = crate::prefs::UNDO_LIMIT.load(std::sync::atomic::Ordering::Relaxed);
         while total > limit && self.undo.len() > 1 {
             total -= self.undo[0].bytes();
             self.undo.remove(0);
+            self.undo_marks.remove(0);
         }
         self.redo.clear();
+        self.redo_marks.clear();
         self.dirty = true;
     }
 
@@ -814,6 +827,8 @@ impl Doc {
         if let Some(u) = self.undo.pop() {
             let r = self.apply(u);
             self.redo.push(r);
+            let mark = self.undo_marks.pop().unwrap_or(false);
+            self.redo_marks.push(mark);
             self.dirty = true;
             true
         } else {
@@ -824,6 +839,8 @@ impl Doc {
         if let Some(u) = self.redo.pop() {
             let r = self.apply(u);
             self.undo.push(r);
+            let mark = self.redo_marks.pop().unwrap_or(false);
+            self.undo_marks.push(mark);
             self.dirty = true;
             true
         } else {
@@ -833,6 +850,66 @@ impl Doc {
     pub fn clear_history(&mut self) {
         self.undo.clear();
         self.redo.clear();
+        self.undo_marks.clear();
+        self.redo_marks.clear();
+    }
+
+    /// The undo marks, in the order of `history`: for the steps done, then for the steps undone.
+    pub fn history_marks(&self) -> (Vec<bool>, Vec<bool>) {
+        (self.undo_marks.clone(), self.redo_marks.iter().rev().copied().collect())
+    }
+
+    /// The step the project is at: how many steps of the history are done (0 = the start).
+    pub fn history_step(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Put a mark on the state reached after `step` steps, or remove it (1 = after the first
+    /// step; the start itself cannot be marked). Returns whether that state is now marked.
+    pub fn toggle_undo_mark(&mut self, step: usize) -> bool {
+        let done = self.undo_marks.len();
+        let undone = self.redo_marks.len();
+        let slot = if step == 0 {
+            None
+        } else if step <= done {
+            self.undo_marks.get_mut(step - 1)
+        } else if step - done <= undone {
+            // the undone steps are kept with the next one last
+            self.redo_marks.get_mut(undone - (step - done))
+        } else {
+            None
+        };
+        match slot {
+            Some(m) => {
+                *m = !*m;
+                *m
+            }
+            None => false,
+        }
+    }
+
+    /// The nearest marked state after the current one (`forward`) or before it.
+    pub fn undo_mark_from_here(&self, forward: bool) -> Option<usize> {
+        let done = self.undo_marks.len();
+        if forward {
+            self.redo_marks.iter().rev().position(|m| *m).map(|k| done + k + 1)
+        } else {
+            // a mark on the current state is where the project already is: look before it
+            self.undo_marks[..done.saturating_sub(1)].iter().rposition(|m| *m).map(|i| i + 1)
+        }
+    }
+
+    /// Go to the state after `step` steps of the history, undoing or redoing as needed.
+    /// Returns false when the project was already there.
+    pub fn go_to_step(&mut self, step: usize) -> bool {
+        let mut moved = false;
+        while self.undo.len() > step && self.undo() {
+            moved = true;
+        }
+        while self.undo.len() < step && self.redo() {
+            moved = true;
+        }
+        moved
     }
 
     // ---------- timeline editing ----------
@@ -1814,20 +1891,88 @@ impl Doc {
     /// Stretch (or shrink) a layer's animation to `new_len` frames: every drawing starts at the
     /// proportional place ("Layer: Stretch"). Returns false when there is nothing to stretch.
     pub fn stretch_layer(&mut self, li: usize, new_len: usize) -> bool {
-        let l = &self.layers[li];
-        if l.locked || new_len == 0 {
+        if self.stretch_len(li).is_none_or(|old| old == new_len) || new_len == 0 {
             return false;
         }
-        let Some(start) = l.cels.iter().position(|c| c.is_some()) else {
+        self.push_structure_undo();
+        self.stretch_cells(li, new_len);
+        self.pad_all();
+        self.dirty = true;
+        true
+    }
+
+    /// Stretch several layers by the same time ratio (2.0 = twice as long, so twice slower; 0.5 =
+    /// half as long), in one undo step. Returns how many layers changed.
+    pub fn stretch_layers_by(&mut self, layers: &[usize], ratio: f32) -> usize {
+        let plan: Vec<(usize, usize)> = layers
+            .iter()
+            .filter_map(|&li| {
+                let old = self.stretch_len(li)?;
+                let new_len = ((old as f32 * ratio).round() as usize).max(1);
+                (new_len != old).then_some((li, new_len))
+            })
+            .collect();
+        if plan.is_empty() || !ratio.is_finite() || ratio <= 0.0 {
+            return 0;
+        }
+        self.push_structure_undo();
+        for &(li, new_len) in &plan {
+            self.stretch_cells(li, new_len);
+        }
+        self.pad_all();
+        self.dirty = true;
+        plan.len()
+    }
+
+    /// How many frames a layer's own animation lasts, when it can be stretched (it has a drawing
+    /// and is not locked).
+    pub fn stretch_len(&self, li: usize) -> Option<usize> {
+        if self.layers[li].locked {
+            return None;
+        }
+        self.layer_span(li).map(|(a, b)| b - a + 1)
+    }
+
+    /// Give every drawing of a layer the same exposure, `hold` frames each (1 = on ones, 2 = on
+    /// twos…). Returns the layer's new last frame, None when there is nothing to retime.
+    pub fn retime_layer(&mut self, li: usize, hold: usize) -> Option<usize> {
+        let (start, end) = self.layer_span(li)?;
+        let had_end = self.layers[li].end.is_some();
+        let last = self.set_exposure(li, start, end, hold)?;
+        if had_end {
+            self.layers[li].end = Some(last);
+        }
+        self.dirty = true;
+        Some(last)
+    }
+
+    /// Make a layer start at frame `at`: what it showed before is removed and the drawing shown
+    /// at `at` starts there. Returns false when `at` is not inside the layer's animation.
+    pub fn trim_layer_start(&mut self, li: usize, at: usize) -> bool {
+        let Some((start, end)) = self.layer_span(li) else { return false };
+        if self.layers[li].locked || at <= start || at > end {
             return false;
+        }
+        let first = self.drawing_at(li, at);
+        self.push_structure_undo();
+        let cels = &mut self.layers[li].cels;
+        for c in &mut cels[start..at] {
+            *c = None;
+        }
+        cels[at] = first;
+        self.dirty = true;
+        true
+    }
+
+    /// The cells of `stretch_layer`, without the undo step.
+    fn stretch_cells(&mut self, li: usize, new_len: usize) {
+        let l = &self.layers[li];
+        let Some(start) = l.cels.iter().position(|c| c.is_some()) else {
+            return;
         };
         let end = l.end.unwrap_or(self.frames - 1).max(start);
         let old_len = end - start + 1;
-        if old_len == new_len {
-            return false;
-        }
         let keys: Vec<(usize, usize)> = (start..=end).filter_map(|f| l.cels[f].map(|id| (f - start, id))).collect();
-        self.push_structure_undo();
         let total = (start + new_len).max(self.frames);
         let mut cels: Vec<Option<usize>> = vec![None; total];
         for (r, id) in keys {
@@ -1849,9 +1994,6 @@ impl Doc {
         if l.end.is_some() || new_len < old_len {
             l.end = Some(start + new_len - 1);
         }
-        self.pad_all();
-        self.dirty = true;
-        true
     }
 
     /// A drawing through its layer's effects at a frame (cached until the drawing or the effects change).
@@ -2980,5 +3122,75 @@ mod tests {
         d.mark_in = Some(2);
         d.mark_out = Some(4);
         assert_eq!(d.play_range(), (2, 4));
+    }
+
+    #[test]
+    fn undo_marks() {
+        let mut d = doc4();
+        d.clear_history();
+        for _ in 0..5 {
+            d.add_layer(); // five steps
+        }
+        assert_eq!(d.history_step(), 5);
+        assert!(!d.toggle_undo_mark(0), "the start cannot be marked");
+        assert!(d.toggle_undo_mark(2));
+        assert!(d.toggle_undo_mark(5), "the current state");
+        assert_eq!(d.history_marks().0, vec![false, true, false, false, true]);
+        assert_eq!(d.undo_mark_from_here(false), Some(2), "the mark where we are does not count");
+        assert!(d.go_to_step(2));
+        assert_eq!((d.history_step(), d.layers.len()), (2, 3));
+        // the marks follow their steps into the undone part and back
+        assert_eq!(d.history_marks(), (vec![false, true], vec![false, false, true]));
+        assert_eq!(d.undo_mark_from_here(false), None);
+        assert_eq!(d.undo_mark_from_here(true), Some(5));
+        assert!(d.toggle_undo_mark(4), "an undone step can be marked too");
+        assert_eq!(d.undo_mark_from_here(true), Some(4));
+        assert!(!d.toggle_undo_mark(4));
+        assert!(d.go_to_step(5));
+        assert_eq!(d.layers.len(), 6);
+        assert!(!d.go_to_step(5), "already there");
+        assert!(!d.toggle_undo_mark(9), "no such step");
+        // a new change drops the undone steps and their marks
+        d.go_to_step(3);
+        d.add_layer();
+        assert_eq!(d.history_marks(), (vec![false, true, false, false], vec![]));
+    }
+
+    #[test]
+    fn stretching_by_ratio_retiming_and_trimming() {
+        let keys = |d: &Doc, li: usize| d.keys(li).iter().map(|k| k.0).collect::<Vec<_>>();
+        let mut d = doc4(); // drawings at 0, 1, 2, 3 of 8 frames
+        d.layers[0].end = Some(3);
+        d.add_layer();
+        d.current_layer = 0;
+        d.clear_history();
+        // both layers twice slower, in one undo step
+        assert_eq!(d.stretch_layers_by(&[0, 1], 2.0), 2);
+        assert_eq!(keys(&d, 0), vec![0, 2, 4, 6]);
+        assert_eq!(d.layers[0].end, Some(7));
+        assert_eq!(d.history_step(), 1);
+        assert_eq!(d.stretch_layers_by(&[0], 1.0), 0, "the same length changes nothing");
+        assert_eq!(d.stretch_layers_by(&[0], 0.0), 0);
+        d.undo();
+        assert_eq!(keys(&d, 0), vec![0, 1, 2, 3]);
+        // retime: every drawing on threes
+        assert_eq!(d.retime_layer(0, 3), Some(11));
+        assert_eq!(keys(&d, 0), vec![0, 3, 6, 9]);
+        assert_eq!((d.layers[0].end, d.frames), (Some(11), 12));
+        assert_eq!(d.retime_layer(0, 1), Some(3));
+        assert_eq!((keys(&d, 0), d.layers[0].end), (vec![0, 1, 2, 3], Some(3)));
+        d.layers[0].locked = true;
+        assert_eq!(d.retime_layer(0, 2), None);
+        assert_eq!(d.stretch_layers_by(&[0], 2.0), 0);
+        d.layers[0].locked = false;
+        // trim the start: the drawing shown there becomes the first
+        d.retime_layer(0, 2); // drawings at 0, 2, 4, 6
+        let held = d.drawing_at(0, 3).unwrap();
+        assert!(d.trim_layer_start(0, 3));
+        assert_eq!(keys(&d, 0), vec![3, 4, 6]);
+        assert_eq!(d.drawing_at(0, 3), Some(held));
+        assert_eq!(d.drawing_at(0, 2), None);
+        assert!(!d.trim_layer_start(0, 3), "already the first frame");
+        assert!(!d.trim_layer_start(0, 99));
     }
 }
