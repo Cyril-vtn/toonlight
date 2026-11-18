@@ -7,14 +7,14 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **61** done, **19** partial, **70** missing.
+Today: **62** done, **18** partial, **70** missing.
 
 ## Next (P1)
 
 1. Drawing: try the macOS pen pressure and tilt with real tablets; pen tilt on Windows and Linux.
 2. Sound: tracks for the whole project.
-3. Camera motion blur and speed profile.
-4. Storyboard PDF styles.
+3. Storyboard PDF styles.
+4. Camera handles on the canvas and "follow camera" display.
 
 ---
 
@@ -172,7 +172,7 @@ Each layer has an **effect stack** (several effects in a row, shown live, animat
 | Feature | Status | Priority |
 |---|---|---|
 | Camera keys (position, zoom, rotation), smooth / linear, size, view through it, exports | ✅ | — |
-| Camera locks (X, Y, rotation, zoom, all), motion blur, speed profile curve | 🟡 | P2 |
+| Camera locks (X, Y, rotation, zoom), motion blur, speed profile curve | ✅ | — |
 | Follow camera display, camera handles on canvas | ❌ | P2 |
 | Render camera to a new project / clip | ❌ | P3 |
 | Export camera to LightWave | ❌ | P3 |

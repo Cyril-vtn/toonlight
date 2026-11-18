@@ -39,6 +39,8 @@ pub static OPEN_SHORTCUTS: std::sync::atomic::AtomicBool = std::sync::atomic::At
 pub static OPEN_GROUPS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// Start option `--history`: open the undo history window.
 pub static OPEN_HISTORY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Start option `--tool <name>`: the tool selected at start (pen, eraser, camera…).
+pub static START_TOOL: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
 /// Start option `--commands <file>`: AI commands (one JSON-RPC message per line) run on the
 /// project once it is open, to set up a state for a check or a screenshot.
 pub static START_COMMANDS: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
@@ -499,6 +501,12 @@ impl AnimApp {
         };
         if let Some(p) = open {
             app.open_path(p);
+        }
+        if let Some(name) = START_TOOL.lock().unwrap().take() {
+            match ALL_TOOLS.iter().find(|t| format!("{t:?}").eq_ignore_ascii_case(&name)) {
+                Some(t) => app.tool = *t,
+                None => eprintln!("--tool: no tool named {name}"),
+            }
         }
         if let Some(p) = START_COMMANDS.lock().unwrap().take() {
             match std::fs::read_to_string(&p) {
@@ -1984,7 +1992,9 @@ impl AnimApp {
             self.doc.composite(self.doc.frame, onion, Rect::full(w, h), &mut self.comp);
             let img = if self.viewing_camera() {
                 let c = &self.doc.camera;
-                let shot = c.shoot(self.doc.frame, &self.comp, w, h, self.doc.paper);
+                // on screen, motion blur mixes fewer camera positions than an export, to stay quick
+                let most = if self.playing { 8 } else { 16 };
+                let shot = c.shoot_with(self.doc.frame, &self.comp, w, h, self.doc.paper, most);
                 egui::ColorImage::from_rgba_unmultiplied([c.width.max(1), c.height.max(1)], &shot)
             } else {
                 egui::ColorImage::from_rgba_unmultiplied([w, h], &self.comp)
@@ -6311,7 +6321,45 @@ impl AnimApp {
                 .radio_value(&mut cam.interpolation, crate::camera::Interpolation::Linear, tr("Linéaire"))
                 .changed();
         });
-        changed |= ui.checkbox(&mut cam.ease, tr("Ralentir au départ et à l'arrivée")).changed();
+        changed |= ui
+            .checkbox(&mut cam.ease, tr("Ralentir au départ et à l'arrivée"))
+            .on_hover_text(tr(
+                "Entre chaque paire de clés. Le profil de vitesse, lui, règle tout le mouvement.",
+            ))
+            .changed();
+        let mut blur = cam.motion_blur * 100.0;
+        let blur_tip = tr(
+            "Part du temps de chaque image pendant laquelle la caméra continue de bouger : son mouvement laisse un flou dans la vue caméra et les exports. 0 = image nette.",
+        );
+        ui.label(tr("Flou de mouvement")).on_hover_text(blur_tip);
+        if ui
+            .add(egui::Slider::new(&mut blur, 0.0..=100.0).suffix(" %").max_decimals(0))
+            .on_hover_text(blur_tip)
+            .changed()
+        {
+            cam.motion_blur = blur / 100.0;
+            changed = true;
+        }
+        ui.label(tr("Profil de vitesse")).on_hover_text(tr(
+            "La vitesse de la caméra sur tout son mouvement, de la première à la dernière clé : le temps va de gauche à droite, le chemin parcouru de bas en haut.",
+        ));
+        ui.horizontal_wrapped(|ui| {
+            use crate::camera::ProfilePreset as P;
+            for p in crate::camera::ALL_PROFILES {
+                let label = match p {
+                    P::Even => tr("Régulier"),
+                    P::SlowIn => tr("Départ lent"),
+                    P::SlowOut => tr("Arrivée lente"),
+                    P::SlowInOut => tr("Départ et arrivée lents"),
+                };
+                if ui.selectable_label(cam.profile == p.points(), label).clicked() {
+                    cam.profile = p.points();
+                    changed = true;
+                }
+            }
+        });
+        changed |= profile_editor(ui, cam);
+        ui.small(tr("Glissez un point, cliquez pour en ajouter un, clic droit pour l'enlever."));
         ui.small(trf("Clés : {}", &[&cam.keys.len()]));
         if ui.checkbox(&mut self.cam_view, tr("Voir à travers la caméra")).changed() {
             self.needs_full = true;
@@ -7581,6 +7629,91 @@ impl eframe::App for AnimApp {
 }
 
 /// A sound track's colour in the timeline: 0 = the usual blue, 1-12 = that colour group's colour.
+/// The camera's speed profile as a curve to edit: the time from left to right, the part of the
+/// move done from bottom to top. Returns true when the profile changed.
+fn profile_editor(ui: &mut egui::Ui, cam: &mut crate::camera::Camera) -> bool {
+    let width = ui.available_width().clamp(80.0, 180.0);
+    let (rect, resp) = ui.allocate_exact_size(vec2(width, (width * 0.7).round()), Sense::click_and_drag());
+    let inner = rect.shrink(6.0);
+    let to_screen = |p: [f32; 2]| pos2(inner.left() + p[0] * inner.width(), inner.bottom() - p[1] * inner.height());
+    let from_screen = |p: Pos2| {
+        [
+            ((p.x - inner.left()) / inner.width()).clamp(0.0, 1.0),
+            ((inner.bottom() - p.y) / inner.height()).clamp(0.0, 1.0),
+        ]
+    };
+    let near = |pts: &[[f32; 2]], at: Pos2| pts.iter().position(|p| to_screen(*p).distance(at) <= 9.0);
+    // the point being dragged, kept from one screen refresh to the next
+    let drag_id = resp.id.with("point");
+    let mut changed = false;
+    if let Some(at) = resp.interact_pointer_pos() {
+        if resp.secondary_clicked() {
+            if let Some(i) = near(&cam.profile, at) {
+                cam.profile.remove(i);
+                changed = true;
+            }
+        } else if resp.drag_started() || resp.clicked() {
+            // take the point under the pointer, or make one there
+            let mut taken = near(&cam.profile, at);
+            if taken.is_none() {
+                let p = from_screen(at);
+                let room = (0.02..=0.98).contains(&p[0]) && cam.profile.iter().all(|q| (q[0] - p[0]).abs() >= 0.03);
+                if room {
+                    let i = cam.profile.iter().position(|q| q[0] > p[0]).unwrap_or(cam.profile.len());
+                    cam.profile.insert(i, p);
+                    taken = Some(i);
+                    changed = true;
+                }
+            }
+            ui.data_mut(|d| d.insert_temp(drag_id, taken));
+        }
+        if resp.dragged() {
+            let taken: Option<usize> = ui.data(|d| d.get_temp::<Option<usize>>(drag_id)).flatten();
+            if let Some(i) = taken.filter(|i| *i < cam.profile.len()) {
+                // a point stays between its neighbours in time
+                let lo = if i == 0 { 0.02 } else { cam.profile[i - 1][0] + 0.03 };
+                let hi = if i + 1 == cam.profile.len() {
+                    0.98
+                } else {
+                    cam.profile[i + 1][0] - 0.03
+                };
+                if lo <= hi {
+                    let p = from_screen(at);
+                    cam.profile[i] = [p[0].clamp(lo, hi), p[1]];
+                    changed = true;
+                }
+            }
+        }
+    }
+    let p = ui.painter_at(rect);
+    let v = ui.visuals();
+    p.rect_filled(rect, 3.0, v.extreme_bg_color);
+    let faint = Line::new(1.0_f32, v.weak_text_color().gamma_multiply(0.25));
+    for k in 0..=4 {
+        let t = k as f32 / 4.0;
+        p.line_segment([to_screen([t, 0.0]), to_screen([t, 1.0])], faint);
+        p.line_segment([to_screen([0.0, t]), to_screen([1.0, t])], faint);
+    }
+    // the even speed, for comparison, then the profile
+    p.line_segment([to_screen([0.0, 0.0]), to_screen([1.0, 1.0])], faint);
+    let curve: Vec<Pos2> = (0..=48)
+        .map(|k| {
+            let t = k as f32 / 48.0;
+            to_screen([t, cam.profile_at(t)])
+        })
+        .collect();
+    let accent = v.selection.bg_fill;
+    p.add(egui::Shape::line(curve, Line::new(2.0_f32, accent)));
+    for q in [[0.0, 0.0], [1.0, 1.0]] {
+        p.circle_filled(to_screen(q), 3.0, v.weak_text_color());
+    }
+    for q in &cam.profile {
+        p.circle_filled(to_screen(*q), 4.5, v.strong_text_color());
+        p.circle_stroke(to_screen(*q), 4.5, Line::new(1.0_f32, accent));
+    }
+    changed
+}
+
 /// What a layer's small timeline picture was made from: the drawing, the two picture counters
 /// and its size.
 type ThumbKey = (Option<usize>, u64, u64, usize, usize);

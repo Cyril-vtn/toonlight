@@ -1304,6 +1304,32 @@ impl Server {
                 if let Some(v) = a.get("ease").and_then(Value::as_bool) {
                     cam.ease = v;
                 }
+                if let Some(v) = a.get("motion_blur").and_then(Value::as_f64) {
+                    cam.motion_blur = (v as f32 / 100.0).clamp(0.0, 1.0);
+                }
+                let bad_profile = "profile is even, slow_in, slow_out, slow_in_out, or a list of [time, move] points between 0 and 1";
+                match a.get("profile") {
+                    Some(Value::String(name)) => {
+                        cam.profile = crate::camera::ProfilePreset::from_name(name).ok_or(bad_profile)?.points();
+                    }
+                    Some(Value::Array(list)) => {
+                        let mut points = vec![];
+                        for p in list {
+                            let xy: Vec<f64> = p
+                                .as_array()
+                                .map(|v| v.iter().filter_map(Value::as_f64).collect())
+                                .unwrap_or_default();
+                            if xy.len() != 2 {
+                                return Err(bad_profile.into());
+                            }
+                            points.push([xy[0] as f32, xy[1] as f32]);
+                        }
+                        cam.profile = points;
+                        cam.clean_profile();
+                    }
+                    Some(Value::Null) | None => {}
+                    Some(_) => return Err(bad_profile.into()),
+                }
                 for (key, slot) in [
                     ("lock_x", &mut cam.lock_x),
                     ("lock_y", &mut cam.lock_y),
@@ -1346,7 +1372,8 @@ impl Server {
                     .collect();
                 Ok(text(
                     json!({"enabled": cam.enabled, "width": cam.width, "height": cam.height, "keys": keys,
-                        "lock_x": cam.lock_x, "lock_y": cam.lock_y, "lock_rotation": cam.lock_rotation, "lock_zoom": cam.lock_zoom})
+                        "lock_x": cam.lock_x, "lock_y": cam.lock_y, "lock_rotation": cam.lock_rotation, "lock_zoom": cam.lock_zoom,
+                        "ease": cam.ease, "motion_blur": (cam.motion_blur * 100.0).round(), "profile": cam.profile})
                     .to_string(),
                 ))
             }
@@ -2065,8 +2092,9 @@ fn tools() -> Value {
             "amplitude_x": {"type": "number"}, "wavelength_x": {"type": "number"}, "amplitude_y": {"type": "number"}, "wavelength_y": {"type": "number"}, "phase": {"type": "number"},
             "brightness": {"type": "number"}, "contrast": {"type": "number"}, "hue": {"type": "number"}, "saturation": {"type": "number"}, "lightness": {"type": "number"},
             "color": color, "tolerance": {"type": "number"}, "threshold": {"type": "number"}, "dark": {"type": "boolean"}}, "required": ["name"]}},
-        {"name": "camera", "title": "Camera", "description": "Animated camera: turn it on, set its picture size, and set keys {frame, x, y (centre on the canvas), zoom (percent, 100 = whole camera size), rotation (degrees)}; between keys it moves along a smooth curve (or linearly with smooth=false; ease slows in and out). When on, every export and render_frame goes through it. lock_x / lock_y / lock_rotation / lock_zoom keep that value as it is when keys are set.",
+        {"name": "camera", "title": "Camera", "description": "Animated camera: turn it on, set its picture size, and set keys {frame, x, y (centre on the canvas), zoom (percent, 100 = whole camera size), rotation (degrees)}; between keys it moves along a smooth curve (or linearly with smooth=false; ease slows in and out between each pair of keys). profile sets the speed over the whole move, from the first key to the last: even, slow_in, slow_out, slow_in_out, or a list of [time, move] points between 0 and 1 (e.g. [[0.5, 0.2]] = a fifth of the way at half time). motion_blur (0-100, percent of a frame's time the shutter stays open) smears the picture along the camera's move. When on, every export and render_frame goes through it. lock_x / lock_y / lock_rotation / lock_zoom keep that value as it is when keys are set.",
          "inputSchema": {"type": "object", "properties": {"enabled": {"type": "boolean"}, "width": {"type": "integer"}, "height": {"type": "integer"}, "smooth": {"type": "boolean"}, "ease": {"type": "boolean"}, "clear_keys": {"type": "boolean"},
+            "motion_blur": {"type": "number"}, "profile": {"oneOf": [{"type": "string", "enum": ["even", "slow_in", "slow_out", "slow_in_out"]}, {"type": "array", "items": {"type": "array", "items": {"type": "number"}}}]},
             "lock_x": {"type": "boolean"}, "lock_y": {"type": "boolean"}, "lock_rotation": {"type": "boolean"}, "lock_zoom": {"type": "boolean"},
             "keys": {"type": "array", "items": {"type": "object", "properties": {"frame": {"type": "integer"}, "x": {"type": "number"}, "y": {"type": "number"}, "zoom": {"type": "number"}, "rotation": {"type": "number"}}, "required": ["frame"]}}}}},
         {"name": "shot", "title": "Shots (storyboard)", "description": "A project can hold several shots (clips) played one after the other. action: list, add (new empty shot after the active one, becomes active), duplicate (copy of the active shot), select (index), delete (index), rename (index, name, notes). Every other tool works on the active shot; project_save keeps them all.",
@@ -2309,6 +2337,20 @@ mod tests {
         ok(&mut s, "undo", json!({"to_step": marked}));
         ok(&mut s, "camera", json!({"lock_x": true, "keys": [{"frame": 0, "x": 5, "y": 6}]}));
         assert!(s.doc.camera.lock_x && (s.doc.camera.keys[0].x - 32.0).abs() < 0.01);
+        // camera speed profile and motion blur
+        ok(&mut s, "camera", json!({"profile": "slow_in", "motion_blur": 50}));
+        assert_eq!((s.doc.camera.profile.len(), s.doc.camera.motion_blur), (3, 0.5));
+        ok(&mut s, "camera", json!({"profile": [[0.8, 0.9], [0.3, 0.1]]}));
+        assert_eq!(s.doc.camera.profile, vec![[0.3, 0.1], [0.8, 0.9]]);
+        let r = call(
+            &mut s,
+            80,
+            "tools/call",
+            json!({"name": "camera", "arguments": {"profile": "fast"}}),
+        );
+        assert_eq!(r["result"]["isError"], json!(true));
+        ok(&mut s, "camera", json!({"profile": "even", "motion_blur": 0}));
+        assert!(s.doc.camera.profile.is_empty());
         ok(&mut s, "palette", json!({"action": "set", "colors": ["#102030", [1, 2, 3]]}));
         // colour groups: the reference's 12 colours, group 0 for new layers
         assert_eq!(s.doc.layers[1].group, crate::doc::default_group());
