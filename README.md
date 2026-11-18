@@ -17,14 +17,15 @@
 
 ## Download
 
-Installers for every stable version are on the
-**[Releases page](https://github.com/Cyril-vtn/toonlight/releases/latest)**:
+Installers are on the **[Releases page](https://github.com/Cyril-vtn/toonlight/releases)**. The
+first versions are test versions (marked "Pre-release"): they work, but expect rough edges and
+please [report](https://github.com/Cyril-vtn/toonlight/issues) what goes wrong.
 
 | System | File | First start |
 |---|---|---|
-| Windows 10 / 11 | `Toonlight_x.y.z_x64-setup.exe` | Windows may show "Windows protected your PC": click **More info → Run anyway** (the installer is not signed yet). |
-| macOS 11+ (Apple Silicon) | `Toonlight_x.y.z_aarch64.dmg` | Drag Toonlight to Applications. The first time, **right-click the app → Open** (it is not notarised yet). |
-| Linux | `.AppImage` or `.deb` | `chmod +x Toonlight*.AppImage` then run it, or `sudo apt install ./toonlight_*.deb`. |
+| Windows 10 / 11 | `toonlight_x.y.z_x64-setup.exe` | Windows may show "Windows protected your PC": click **More info → Run anyway** (the installer is not signed yet). |
+| macOS 11+ (Apple Silicon) | `Toonlight_x.y.z_aarch64.dmg` | Open it (it shows the licence first), then drag Toonlight to Applications. The first time, **right-click the app → Open** (it is not notarised yet). |
+| Linux | `.AppImage` or `.deb` | `chmod +x toonlight*.AppImage` then run it, or `sudo apt install ./toonlight_*.deb`. |
 
 ## Features
 
