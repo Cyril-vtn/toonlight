@@ -1785,7 +1785,7 @@ impl Server {
                             p.display()
                         )))
                     }
-                    "storyboard" | "film_png" | "film_mp4" => {
+                    "storyboard" | "storyboard_pdf" | "edl" | "film_png" | "film_mp4" => {
                         let docs: Vec<&Doc> = (0..self.clips.len())
                             .map(|i| {
                                 if i == self.active {
@@ -1796,7 +1796,7 @@ impl Server {
                             })
                             .collect();
                         match str_arg(a, "format")? {
-                            "storyboard" => {
+                            format @ ("storyboard" | "storyboard_pdf" | "edl") => {
                                 let shots: Vec<io::BoardShot> = docs
                                     .iter()
                                     .enumerate()
@@ -1817,8 +1817,38 @@ impl Server {
                                     .and_then(|p| p.file_stem())
                                     .map(|s| s.to_string_lossy().to_string())
                                     .unwrap_or_else(|| "Storyboard".into());
-                                let index = io::export_storyboard_html(&title, &shots, &p)?;
-                                Ok(text(format!("Storyboard page written: {}", index.display())))
+                                // how the sheets are laid out
+                                let mut o = crate::board::BoardOptions::default();
+                                if let Some(v) = a.get("style").and_then(Value::as_str) {
+                                    o.style = crate::board::BoardStyle::from_name(v).ok_or("style is grid, rows or single")?;
+                                }
+                                if let Some(v) = a.get("columns").and_then(Value::as_u64) {
+                                    o.columns = (v as usize).clamp(2, 6);
+                                }
+                                for (key, slot) in [
+                                    ("landscape", &mut o.landscape),
+                                    ("letter", &mut o.letter),
+                                    ("notes", &mut o.notes),
+                                    ("timing", &mut o.timing),
+                                ] {
+                                    if let Some(v) = a.get(key).and_then(Value::as_bool) {
+                                        *slot = v;
+                                    }
+                                }
+                                match format {
+                                    "storyboard_pdf" => {
+                                        let pages = crate::board::export_pdf(&title, &shots, &o, &p)?;
+                                        Ok(text(format!("Storyboard PDF written ({pages} pages, style {}): {}", o.style.name(), p.display())))
+                                    }
+                                    "edl" => {
+                                        std::fs::write(&p, crate::board::edl(&title, &shots)).map_err(|e| e.to_string())?;
+                                        Ok(text(format!("Edit decision list of {} shots written: {}", shots.len(), p.display())))
+                                    }
+                                    _ => {
+                                        let index = io::export_storyboard_html(&title, &shots, &o, &p)?;
+                                        Ok(text(format!("Storyboard page written: {}", index.display())))
+                                    }
+                                }
                             }
                             "film_png" => {
                                 std::fs::create_dir_all(&p).map_err(|e| e.to_string())?;
@@ -1844,7 +1874,7 @@ impl Server {
                         Ok(text(format!("After Effects JSON written: {}", j.display())))
                     }
                     other => Err(format!(
-                        "format {other}: use png, gif, mp4, tiff, tga, jpeg, bmp, psd, after_effects, storyboard, film_png or film_mp4"
+                        "format {other}: use png, gif, mp4, tiff, tga, jpeg, bmp, psd, after_effects, storyboard, storyboard_pdf, edl, film_png or film_mp4"
                     )),
                 }
             }
@@ -2144,8 +2174,9 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"to_mark": {"type": "boolean"}}}},
         {"name": "render_frame", "title": "See a frame", "description": "Render a frame as a PNG picture to look at (optionally with the light table). With the camera on, it shows what the camera sees unless whole_canvas is true.",
          "inputSchema": {"type": "object", "properties": {"frame": frame, "light_table": {"type": "boolean"}, "whole_canvas": {"type": "boolean"}, "max_size": {"type": "integer"}}}, "annotations": {"readOnlyHint": true}},
-        {"name": "export", "title": "Export", "description": "Export the animation: png (a folder of numbered pictures), gif, mp4 (needs FFmpeg), after_effects (a folder with JSON + pictures), psd (the current frame, one Photoshop layer per layer plus the paper), tiff / tga / jpeg / bmp (a folder of pictures), storyboard (a folder with a web page, one card per shot with its first picture, name, notes and length; print it to PDF from a browser), film_png / film_mp4 (every shot one after the other).",
-         "inputSchema": {"type": "object", "properties": {"format": {"type": "string", "enum": ["png", "gif", "mp4", "after_effects", "psd", "tiff", "tga", "jpeg", "bmp", "storyboard", "film_png", "film_mp4"]}, "path": {"type": "string"}}, "required": ["format", "path"]}}
+        {"name": "export", "title": "Export", "description": "Export the animation: png (a folder of numbered pictures), gif, mp4 (needs FFmpeg), after_effects (a folder with JSON + pictures), psd (the current frame, one Photoshop layer per layer plus the paper), tiff / tga / jpeg / bmp (a folder of pictures), storyboard (a folder with a web page, one card per shot with its first picture, name, notes and length), storyboard_pdf (the same sheets as a PDF file), edl (the list of shots as a CMX 3600 edit decision list), film_png / film_mp4 (every shot one after the other). The two storyboard formats take style (grid, rows = one shot per line, single = one shot per page), columns (grid, 2-6), landscape, letter (US Letter instead of A4), notes and timing (false leaves them out).",
+         "inputSchema": {"type": "object", "properties": {"format": {"type": "string", "enum": ["png", "gif", "mp4", "after_effects", "psd", "tiff", "tga", "jpeg", "bmp", "storyboard", "storyboard_pdf", "edl", "film_png", "film_mp4"]}, "path": {"type": "string"},
+            "style": {"type": "string", "enum": ["grid", "rows", "single"]}, "columns": {"type": "integer"}, "landscape": {"type": "boolean"}, "letter": {"type": "boolean"}, "notes": {"type": "boolean"}, "timing": {"type": "boolean"}}, "required": ["format", "path"]}}
     ])
 }
 

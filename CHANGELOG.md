@@ -6,6 +6,16 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Storyboard as a PDF, in three layouts** (Storyboard window > Export the storyboard): a grid
+  of cards (2 to 6 columns), one shot per line (the picture on the left, the notes beside it), or
+  one shot per page; A4 or Letter, portrait or landscape; with or without the notes and each
+  shot's length and start time. Sheets carry the title, the film's totals and page numbers, and
+  are written in any language (accents, Chinese, Japanese). The web page export follows the same
+  options.
+- **Edit list (EDL)**: the list of shots with their timecodes, in CMX 3600 format, to rebuild the
+  cut in an editing program.
+- AI (MCP): `export` takes the formats `storyboard_pdf` and `edl`, and for the storyboards
+  `style`, `columns`, `landscape`, `letter`, `notes` and `timing`.
 - **Sound tracks for the whole project** (Sound panel > Project tracks): a project track is
   placed on the film — every shot end to end — and heard from one shot to the next: music, a
   voice-over. Each shot shows the part that falls in it as a row in its timeline; the track
