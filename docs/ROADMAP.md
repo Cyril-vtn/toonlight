@@ -7,11 +7,12 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **64** done, **16** partial, **70** missing.
+Today: **65** done, **15** partial, **70** missing.
 
 ## Next (P1)
 
-1. Drawing: try the macOS pen pressure and tilt with real tablets; pen tilt on Windows and Linux.
+1. Drawing: try the pen (pressure, tilt, eraser end) with real tablets on Windows, macOS and
+   Linux; pens in a native Wayland window.
 2. Camera handles on the canvas and "follow camera" display.
 3. Selections: ellipse and polygon; feather, grow and shrink.
 4. Storyboard: more views (rows, columns, timeline) and scenes (groups of shots).
@@ -29,7 +30,7 @@ Today: **64** done, **16** partial, **70** missing.
 | Brush draw modes (Color, Behind, Erase, Shade, Light, Colorize, Tint…) | ✅ | — |
 | Brush profile editor (curve), opacity maps | ❌ | P2 |
 | Pressure curves (size / power / opacity / angle / aspect connections) | ✅ | — |
-| Pen tilt, direction and rotation as brush connections, eraser end (macOS; done); other systems, stylus only | 🟡 | P2 |
+| Pen pressure, tilt, direction and rotation as brush connections, eraser end, on Windows, macOS and Linux (to be confirmed on real tablets) | ✅ | — |
 | Tablet pressure on macOS (to be confirmed on real tablets) | ✅ | — |
 | Line smoothing (stabiliser), live and HUD | ✅ | — |
 | Preserve transparency (paint only on existing pixels) | ✅ | — |

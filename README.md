@@ -31,8 +31,8 @@ Installers for every stable version are on the
 - **Drawing**: pencil (with grain), pen, airbrush, brush, wet brush (mixes colours), eraser, fill,
   line, rectangle, ellipse, text, gradient, warp, colour picker; size, power, opacity, aspect and
   angle; 17 draw modes (behind, shade, light, colorize, tint, multiply…); preserve transparency;
-  line smoothing; pen pressure (tablets and touch screens), simulated from speed with a mouse;
-  on macOS also the pen's tilt, direction and rotation, and its eraser end.
+  line smoothing; graphics tablets on Windows, macOS and Linux: pen pressure, tilt, direction,
+  rotation and the eraser end (pressure can also be simulated from the speed with a mouse).
 - **Custom brushes** from a selection or a picture, and **tool presets**.
 - **Selections**: rectangle, lasso, magic wand; copy, cut, paste; move, scale, rotate, mirror.
 - **Layers**: visibility, lock, onion skin, stencil, opacity, blending modes, colour groups
@@ -86,6 +86,12 @@ Start options: `--lang en` (fr, en, es, de, zh, ja), `--shortcuts`, `--storyboar
 120 frames, saves a picture and quits),
 `--commands file` (runs AI commands, one JSON-RPC message per line, on the opened project),
 `--mcp` (AI server, no window), or a project file to open.
+
+Graphics tablets: on Windows the pen is read through Windows Ink (leave it on in the tablet's
+driver). On Linux it is read from the X server, so in a Wayland session the app runs through
+XWayland; `TOONLIGHT_WAYLAND=1` asks for a native Wayland window (without pen pressure). If a pen
+does not behave, start the app with `TOONLIGHT_PEN_LOG=1` from a terminal and send what it
+writes with your report.
 
 Installers are made with [cargo-packager](https://github.com/crabnebula-dev/cargo-packager):
 `cargo install cargo-packager --locked`, then `cargo packager --release` (see

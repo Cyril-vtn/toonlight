@@ -54,3 +54,41 @@ jobs:
         run: cargo clippy --all-targets -- -D warnings
       - name: Tests
         run: cargo test
+      # The real app is started where a screen (or a stand-in for one) exists: it must open its
+      # window, draw, save a picture of itself and quit. TOONLIGHT_PEN_LOG makes the pen listener
+      # say whether it could start.
+      - name: Build the app
+        if: runner.os != 'Windows'
+        run: cargo build
+      - name: The app starts and draws (Linux, on a virtual screen)
+        if: runner.os == 'Linux'
+        timeout-minutes: 10
+        env:
+          TOONLIGHT_PEN_LOG: 1
+        run: |
+          sudo apt-get install -y xvfb libgl1-mesa-dri libglx-mesa0 libegl1 libxkbcommon-x11-0
+          export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings"
+          xvfb-run -a -s "-screen 0 1600x1000x24" \
+            ./target/debug/toonlight --screenshot "$RUNNER_TEMP/toonlight-linux.png" 2> "$RUNNER_TEMP/start.log" || true
+          cat "$RUNNER_TEMP/start.log"
+          test -s "$RUNNER_TEMP/toonlight-linux.png"
+          grep -q "pen: X11: listening" "$RUNNER_TEMP/start.log"
+      - name: The app starts and draws (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 10
+        env:
+          TOONLIGHT_PEN_LOG: 1
+        run: |
+          export TOONLIGHT_CONFIG_DIR="$RUNNER_TEMP/settings"
+          ./target/debug/toonlight --screenshot "$RUNNER_TEMP/toonlight-macos.png" 2> "$RUNNER_TEMP/start.log" || true
+          cat "$RUNNER_TEMP/start.log"
+          test -s "$RUNNER_TEMP/toonlight-macos.png"
+          grep -q "pen: macOS: listening" "$RUNNER_TEMP/start.log"
+      - name: Keep the picture of the app
+        if: always() && runner.os != 'Windows'
+        uses: actions/upload-artifact@v7
+        with:
+          name: started-${{ matrix.os }}
+          path: ${{ runner.temp }}/toonlight-*.png
+          if-no-files-found: ignore
+          retention-days: 14
