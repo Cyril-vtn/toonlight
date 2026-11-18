@@ -12,6 +12,22 @@ const OLD_MAGIC: &[u8; 8] = b"ATANIM01";
 /// an embedded ANMCRFT1 stream.
 const MAGIC2: &[u8; 8] = b"ANMCRFT2";
 const OLD_MAGIC2: &[u8; 8] = b"ATANIM02";
+/// What a project holds beside its clips, as JSON after the last clip: versions from before it
+/// existed stop reading there and still open the file.
+const PROJECT_MAGIC: &[u8; 8] = b"ANMCRFTP";
+
+#[derive(Serialize, Deserialize, Default)]
+struct ProjectExtras {
+    /// The project's own sound tracks, placed on the film (every clip end to end).
+    #[serde(default)]
+    sounds: Vec<crate::sound::SoundTrack>,
+}
+
+/// A project as saved: its clips, and the sound tracks of the whole project.
+pub struct ProjectFile {
+    pub clips: Vec<ClipFile>,
+    pub sounds: Vec<crate::sound::SoundTrack>,
+}
 
 /// One clip of a project, as saved: its name, its notes (storyboard text) and its animation.
 pub struct ClipFile {
@@ -69,33 +85,55 @@ pub fn png_bytes(px: &[u8], w: usize, h: usize) -> Result<Vec<u8>, String> {
     Ok(out)
 }
 
+#[cfg(test)]
 pub fn save(doc: &Doc, path: &Path) -> Result<(), String> {
+    save_project(&[(doc, "", "")], &[], path)
+}
+
+/// Save a project: its clips (animation, name, notes) and the project's own sound tracks.
+pub fn save_project(clips: &[(&Doc, &str, &str)], sounds: &[crate::sound::SoundTrack], path: &Path) -> Result<(), String> {
     let mut f = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
-    write_doc(doc, &mut f)?;
+    if clips.len() == 1 && clips[0].1.is_empty() && clips[0].2.is_empty() {
+        // a single unnamed clip is written alone, as before clips existed
+        write_doc(clips[0].0, &mut f)?;
+    } else {
+        let info: Vec<ClipInfo> = clips
+            .iter()
+            .map(|c| ClipInfo {
+                name: c.1.to_string(),
+                notes: c.2.to_string(),
+            })
+            .collect();
+        let json = serde_json::to_vec(&info).map_err(|e| e.to_string())?;
+        f.write_all(MAGIC2).map_err(|e| e.to_string())?;
+        f.write_all(&(json.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&json).map_err(|e| e.to_string())?;
+        for c in clips {
+            write_doc(c.0, &mut f)?;
+        }
+    }
+    if !sounds.is_empty() {
+        let extras = ProjectExtras { sounds: sounds.to_vec() };
+        let json = serde_json::to_vec(&extras).map_err(|e| e.to_string())?;
+        f.write_all(PROJECT_MAGIC).map_err(|e| e.to_string())?;
+        f.write_all(&(json.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
+        f.write_all(&json).map_err(|e| e.to_string())?;
+    }
     f.flush().map_err(|e| e.to_string())
 }
 
-/// Save several clips in one project file.
-pub fn save_project(clips: &[(&Doc, &str, &str)], path: &Path) -> Result<(), String> {
-    if clips.len() == 1 && clips[0].1.is_empty() && clips[0].2.is_empty() {
-        return save(clips[0].0, path);
+/// What follows the last clip of a project file, when there is something.
+fn read_extras(f: &mut impl Read) -> ProjectExtras {
+    let mut magic = [0u8; 8];
+    let mut len = [0u8; 4];
+    if f.read_exact(&mut magic).is_err() || &magic != PROJECT_MAGIC || f.read_exact(&mut len).is_err() {
+        return ProjectExtras::default();
     }
-    let info: Vec<ClipInfo> = clips
-        .iter()
-        .map(|c| ClipInfo {
-            name: c.1.to_string(),
-            notes: c.2.to_string(),
-        })
-        .collect();
-    let json = serde_json::to_vec(&info).map_err(|e| e.to_string())?;
-    let mut f = std::io::BufWriter::new(std::fs::File::create(path).map_err(|e| e.to_string())?);
-    f.write_all(MAGIC2).map_err(|e| e.to_string())?;
-    f.write_all(&(json.len() as u32).to_le_bytes()).map_err(|e| e.to_string())?;
-    f.write_all(&json).map_err(|e| e.to_string())?;
-    for c in clips {
-        write_doc(c.0, &mut f)?;
+    let mut json = vec![0u8; u32::from_le_bytes(len) as usize];
+    if f.read_exact(&mut json).is_err() {
+        return ProjectExtras::default();
     }
-    f.flush().map_err(|e| e.to_string())
+    serde_json::from_slice(&json).unwrap_or_default()
 }
 
 /// A full copy of an animation (through the file format).
@@ -171,7 +209,7 @@ fn write_doc(doc: &Doc, f: &mut impl Write) -> Result<(), String> {
 /// Open a project's first clip.
 #[cfg(test)]
 pub fn open(path: &Path) -> Result<Doc, String> {
-    Ok(open_project(path)?.remove(0).doc)
+    Ok(open_project(path)?.clips.remove(0).doc)
 }
 
 /// Whether "Save" can write straight to `path`: only a project file (our extension) that still
@@ -215,16 +253,20 @@ pub fn free_name(path: &Path) -> std::path::PathBuf {
 }
 
 /// Open every clip of a project (one for files with a single animation).
-pub fn open_project(path: &Path) -> Result<Vec<ClipFile>, String> {
+pub fn open_project(path: &Path) -> Result<ProjectFile, String> {
     let mut f = std::io::BufReader::new(std::fs::File::open(path).map_err(|e| e.to_string())?);
     let mut magic = [0u8; 8];
     f.read_exact(&mut magic).map_err(|e| e.to_string())?;
     if &magic == MAGIC || &magic == OLD_MAGIC {
-        return Ok(vec![ClipFile {
+        let clips = vec![ClipFile {
             name: String::new(),
             notes: String::new(),
             doc: read_doc(&mut f)?,
-        }]);
+        }];
+        return Ok(ProjectFile {
+            clips,
+            sounds: read_extras(&mut f).sounds,
+        });
     }
     if &magic != MAGIC2 && &magic != OLD_MAGIC2 {
         return Err(crate::i18n::tr("Ce fichier n'est pas un projet d'animation.").into());
@@ -249,7 +291,10 @@ pub fn open_project(path: &Path) -> Result<Vec<ClipFile>, String> {
     if out.is_empty() {
         return Err(crate::i18n::tr("Le projet n'a aucun calque.").into());
     }
-    Ok(out)
+    Ok(ProjectFile {
+        clips: out,
+        sounds: read_extras(&mut f).sounds,
+    })
 }
 
 /// Read one animation (after its 8-byte mark).
@@ -350,7 +395,7 @@ pub fn export_film_frames(clips: &[&Doc], dir: &Path) -> Result<usize, String> {
 
 /// Export every clip one after the other as one MP4, at the first clip's frame rate, with each
 /// clip's sound tracks placed where the clip starts and cut where it ends.
-pub fn export_film_video(clips: &[&Doc], path: &Path, ffmpeg: &Path) -> Result<(), String> {
+pub fn export_film_video(clips: &[&Doc], sounds: &[crate::sound::SoundTrack], path: &Path, ffmpeg: &Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let (fw, fh) = clips[0].output_size();
     let fps = clips[0].fps.max(1.0);
@@ -361,6 +406,12 @@ pub fn export_film_video(clips: &[&Doc], path: &Path, ffmpeg: &Path) -> Result<(
         placed.extend(d.sounds.iter().map(|t| PlacedSound { track: t, start, length }));
         start += length;
     }
+    // the project's own tracks run through the whole film
+    placed.extend(sounds.iter().map(|t| PlacedSound {
+        track: t,
+        start: 0.0,
+        length: start,
+    }));
     let mut child = Command::new(ffmpeg)
         .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s"])
         .arg(format!("{fw}x{fh}"))
@@ -702,8 +753,28 @@ fn av_args(sounds: &[PlacedSound], total: f32) -> Vec<String> {
     a
 }
 
-/// Export an MP4 (H.264) video through FFmpeg, feeding it raw frames (and the sound tracks).
-pub fn export_video(doc: &Doc, path: &Path, ffmpeg: &Path) -> Result<(), String> {
+/// Where clip `index` starts in the film, in seconds: the film runs at its first clip's frame
+/// rate, every clip end to end.
+pub fn clip_start(clips: &[&Doc], index: usize) -> f32 {
+    let fps = clips.first().map(|d| d.fps).unwrap_or(24.0).max(1.0);
+    clips.iter().take(index).map(|d| d.frames).sum::<usize>() as f32 / fps
+}
+
+/// The project's sound tracks as a clip starting `start` seconds into the film hears them: the
+/// same tracks, placed in the clip's own time.
+pub fn sounds_in_clip(sounds: &[crate::sound::SoundTrack], start: f32) -> Vec<crate::sound::SoundTrack> {
+    sounds
+        .iter()
+        .map(|t| crate::sound::SoundTrack {
+            offset: t.offset - start,
+            ..t.clone()
+        })
+        .collect()
+}
+
+/// Export an MP4 (H.264) video through FFmpeg, feeding it raw frames (and the sound tracks:
+/// the clip's own, and `more`, the project's tracks placed in the clip's time).
+pub fn export_video(doc: &Doc, more: &[crate::sound::SoundTrack], path: &Path, ffmpeg: &Path) -> Result<(), String> {
     use std::process::{Command, Stdio};
     let mut child = Command::new(ffmpeg)
         .args(["-y", "-loglevel", "error", "-f", "rawvideo", "-pix_fmt", "rgba", "-s"])
@@ -717,6 +788,7 @@ pub fn export_video(doc: &Doc, path: &Path, ffmpeg: &Path) -> Result<(), String>
             let placed: Vec<PlacedSound> = doc
                 .sounds
                 .iter()
+                .chain(more)
                 .map(|t| PlacedSound {
                     track: t,
                     start: 0.0,
@@ -863,8 +935,10 @@ mod tests {
         assert_eq!(free_name(&dir.join("t(7)")), dir.join("t(2).toonlight"));
         assert_eq!(free_name(&dir.join("new")), dir.join("new.toonlight"));
         let d2 = duplicate(&d).unwrap();
-        save_project(&[(&d, "One", "notes"), (&d2, "Two", "")], &dir.join("p.toonlight")).unwrap();
-        let clips = open_project(&dir.join("p.toonlight")).unwrap();
+        save_project(&[(&d, "One", "notes"), (&d2, "Two", "")], &[], &dir.join("p.toonlight")).unwrap();
+        let project = open_project(&dir.join("p.toonlight")).unwrap();
+        assert!(project.sounds.is_empty());
+        let clips = project.clips;
         assert_eq!(clips.len(), 2);
         assert_eq!(clips[1].name, "Two");
         assert_eq!(clips[0].notes, "notes");
@@ -920,6 +994,36 @@ mod tests {
         // sounds whose file is missing are left out: only the pictures are encoded
         let args = av_args(&[s], 3.0);
         assert!(args.contains(&"-vf".to_string()) && !args.contains(&"-filter_complex".to_string()));
+        // the project's own tracks: saved after the clips, for one clip or several
+        let mut music = SoundTrack::new("music.mp3".into());
+        music.offset = 1.5;
+        let d2 = duplicate(&d).unwrap();
+        for (file, clips) in [
+            ("one.toonlight", vec![(&d, "", "")]),
+            ("two.toonlight", vec![(&d, "A", ""), (&d2, "B", "")]),
+        ] {
+            save_project(&clips, std::slice::from_ref(&music), &dir.join(file)).unwrap();
+            let back = open_project(&dir.join(file)).unwrap();
+            assert_eq!((back.clips.len(), &back.sounds), (clips.len(), &vec![music.clone()]), "{file}");
+            assert_eq!(back.clips[0].doc.sounds.len(), 2, "the clip keeps its own tracks");
+        }
+        // without project tracks nothing is added: the file is the same as before they existed
+        save_project(&[(&d, "", "")], &[], &dir.join("plain.toonlight")).unwrap();
+        save_project(&[(&d, "", "")], std::slice::from_ref(&music), &dir.join("with.toonlight")).unwrap();
+        let (plain, with) = (
+            std::fs::read(dir.join("plain.toonlight")).unwrap(),
+            std::fs::read(dir.join("with.toonlight")).unwrap(),
+        );
+        assert!(with.starts_with(&plain) && with.len() > plain.len());
+        // a second clip after a first one of 48 frames at 24 i/s starts 2 s into the film
+        let mut first = small_doc();
+        first.fps = 24.0;
+        first.set_length(48);
+        assert_eq!(clip_start(&[&first, &d], 0), 0.0);
+        assert_eq!(clip_start(&[&first, &d], 1), 2.0);
+        // in that clip's own time, the project's music (1.5 s into the film) began 0.5 s earlier
+        let heard = sounds_in_clip(std::slice::from_ref(&music), 2.0);
+        assert_eq!((heard[0].offset, &heard[0].path), (-0.5, &music.path));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

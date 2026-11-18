@@ -6,6 +6,13 @@ and versions follow [Semantic Versioning](https://semver.org). What is planned i
 
 ## [Unreleased]
 
+- **Sound tracks for the whole project** (Sound panel > Project tracks): a project track is
+  placed on the film — every shot end to end — and heard from one shot to the next: music, a
+  voice-over. Each shot shows the part that falls in it as a row in its timeline; the track
+  plays in the window, goes into a shot's MP4 (that part) and into the whole-film MP4. "Move to
+  the project" / "Move to the shot" switches a track between the two without changing when it is
+  heard. Saved in the project file; older versions open the file without these tracks.
+- AI (MCP): `sound_set` takes `project: true`; `project_info` lists `project_sounds`.
 - **Camera speed profile** (camera tool settings): a curve sets the camera's speed over its whole
   move, from the first key to the last — even, slow start, slow arrival, slow start and arrival,
   or your own points (drag a point, click to add one, right-click to remove it).

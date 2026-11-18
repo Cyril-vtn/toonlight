@@ -47,8 +47,9 @@ Installers for every stable version are on the
 - **Undo history** with marks: jump back to any step, or to a state you marked.
 - **Light table** (onion skin), **flipping**, **view rotation and mirror**.
 - **Animated camera** with a speed curve and motion blur, **shots and storyboard**, **sound**:
-  several tracks per shot with waveforms, volume, offset, fades and scrubbing, mixed into the MP4
-  and film exports.
+  several tracks per shot, and tracks for the whole film (music, voice-over) heard from one shot
+  to the next, with waveforms, volume, offset, fades and scrubbing, mixed into the MP4 and film
+  exports.
 - **Effects** with live preview: blur, mosaic, noise, wave, brightness / contrast,
   hue / saturation, invert, colour key, luma key; a stack of effects per layer, animated with
   keys, that you can save as a preset or a file.

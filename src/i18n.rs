@@ -973,6 +973,16 @@ static TABLE: &[(&str, [&str; 5])] = &[
     ("Arrivée lente", ["Slow arrival", "Llegada lenta", "Langsame Ankunft", "慢出", "ゆっくり到着"]),
     ("Départ et arrivée lents", ["Slow start and arrival", "Salida y llegada lentas", "Langsamer Start und langsame Ankunft", "慢入慢出", "ゆっくり出発・到着"]),
     ("Glissez un point, cliquez pour en ajouter un, clic droit pour l'enlever.", ["Drag a point, click to add one, right-click to remove it.", "Arrastre un punto, haga clic para añadir uno, clic derecho para quitarlo.", "Punkt ziehen, klicken zum Hinzufügen, Rechtsklick zum Entfernen.", "拖动一个点，单击添加一个，右键单击将其删除。", "点をドラッグ、クリックで追加、右クリックで削除。"]),
+    // sound tracks of the whole project
+    ("Pistes du projet", ["Project tracks", "Pistas del proyecto", "Projektspuren", "项目音轨", "プロジェクトのトラック"]),
+    ("Une piste du projet s'entend sur tout le film, d'un plan à l'autre : une musique, une voix off. Son décalage se compte depuis le début du film.", ["A project track is heard through the whole film, from one shot to the next: music, a voice-over. Its offset is counted from the film's start.", "Una pista del proyecto se oye en toda la película, de un plano a otro: una música, una voz en off. Su desfase se cuenta desde el inicio de la película.", "Eine Projektspur ist im ganzen Film zu hören, von einer Einstellung zur nächsten: Musik, eine Erzählstimme. Ihr Versatz zählt ab dem Filmanfang.", "项目音轨贯穿整部影片，从一个镜头延续到下一个：音乐、旁白。它的偏移从影片开头算起。", "プロジェクトのトラックは映画全体で、カットをまたいで聞こえます（音楽、ナレーションなど）。オフセットは映画の先頭から数えます。"]),
+    ("Ajouter une piste au projet…", ["Add a track to the project…", "Añadir una pista al proyecto…", "Spur zum Projekt hinzufügen…", "向项目添加音轨…", "プロジェクトにトラックを追加…"]),
+    ("Un son (WAV, MP3) pour tout le film", ["A sound (WAV, MP3) for the whole film", "Un sonido (WAV, MP3) para toda la película", "Ein Ton (WAV, MP3) für den ganzen Film", "用于整部影片的声音（WAV、MP3）", "映画全体のための音（WAV、MP3）"]),
+    ("projet", ["project", "proyecto", "Projekt", "项目", "プロジェクト"]),
+    ("Passer au plan", ["Move to the shot", "Pasar al plano", "In die Einstellung verschieben", "移到镜头", "カットへ移す"]),
+    ("La piste ne s'entend plus que dans ce plan, au même moment qu'avant.", ["The track is then heard only in this shot, at the same moment as before.", "La pista solo se oye entonces en este plano, en el mismo momento que antes.", "Die Spur ist dann nur noch in dieser Einstellung zu hören, zum selben Zeitpunkt wie zuvor.", "音轨之后只在这个镜头中响起，时刻与之前相同。", "トラックはこのカットだけで聞こえるようになります。タイミングは変わりません。"]),
+    ("Passer au projet", ["Move to the project", "Pasar al proyecto", "Ins Projekt verschieben", "移到项目", "プロジェクトへ移す"]),
+    ("La piste s'entend alors sur tout le film, d'un plan à l'autre, au même moment qu'avant.", ["The track is then heard through the whole film, from one shot to the next, at the same moment as before.", "La pista se oye entonces en toda la película, de un plano a otro, en el mismo momento que antes.", "Die Spur ist dann im ganzen Film zu hören, von einer Einstellung zur nächsten, zum selben Zeitpunkt wie zuvor.", "音轨之后贯穿整部影片，从一个镜头延续到下一个，时刻与之前相同。", "トラックは映画全体で、カットをまたいで聞こえるようになります。タイミングは変わりません。"]),
     // guides and flipping
     ("Grille", ["Grid", "Cuadrícula", "Raster", "网格", "グリッド"]),
     ("Pas de la grille", ["Grid spacing", "Paso de la cuadrícula", "Rasterabstand", "网格间距", "グリッド間隔"]),
