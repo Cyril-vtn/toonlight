@@ -40,8 +40,8 @@ What changed since 0.15.0:
 - Fix: the cross that closes a panel showed as an empty box on computers without an extra
   Chinese / Japanese font (most Linux systems). A test now checks that every sign the interface
   writes is in the fonts the app carries.
-- The automatic checks now start the real app on Linux (on a virtual screen) and on macOS, and
-  keep a picture of it.
+- The automatic checks now start the real app on Windows, macOS and Linux, and keep a picture
+  of it.
 - **Storyboard as a PDF, in three layouts** (Storyboard window > Export the storyboard): a grid
   of cards (2 to 6 columns), one shot per line (the picture on the left, the notes beside it), or
   one shot per page; A4 or Letter, portrait or landscape; with or without the notes and each
