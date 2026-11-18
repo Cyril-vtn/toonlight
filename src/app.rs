@@ -304,7 +304,9 @@ pub struct AnimApp {
     /// A recovery copy found at start, offered back.
     recovery_offer: Option<PathBuf>,
     /// The storyboard's HTML export was asked for (done after the window is drawn).
-    export_board_pending: bool,
+    /// A storyboard export asked for in the storyboard window, and how its sheets are laid out.
+    export_board_pending: Option<BoardFormat>,
+    board: crate::board::BoardOptions,
     /// How many times "Repeat" copies the cells.
     repeat_n: usize,
     show_history: bool,
@@ -479,7 +481,8 @@ impl AnimApp {
             show_prefs: false,
             last_recovery: Instant::now(),
             recovery_offer: None,
-            export_board_pending: false,
+            export_board_pending: None,
+            board: Default::default(),
             repeat_n: 1,
             show_history: OPEN_HISTORY.load(std::sync::atomic::Ordering::Relaxed),
             xs_edit: None,
@@ -6207,15 +6210,59 @@ impl AnimApp {
                 ui.horizontal(|ui| {
                     add = ui.button(tr("+ Nouveau plan")).clicked();
                     dup = ui.button(tr("Dupliquer le plan")).clicked();
-                    if ui
-                        .button(tr("Exporter en page web (HTML)…"))
-                        .on_hover_text(tr(
-                            "Une page avec une vignette, la durée et les notes de chaque plan ; imprimable en PDF depuis le navigateur.",
-                        ))
-                        .clicked()
-                    {
-                        self.export_board_pending = true;
-                    }
+                    ui.menu_button(tr("Exporter le storyboard"), |ui| {
+                        use crate::board::BoardStyle;
+                        ui.label(tr("Mise en page"));
+                        for style in crate::board::ALL_STYLES {
+                            ui.radio_value(&mut self.board.style, style, style.label());
+                        }
+                        ui.add_enabled_ui(self.board.style == BoardStyle::Grid, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(tr("Colonnes"));
+                                ui.add(egui::DragValue::new(&mut self.board.columns).range(2..=6));
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label(tr("Papier"));
+                            ui.radio_value(&mut self.board.letter, false, "A4");
+                            ui.radio_value(&mut self.board.letter, true, "Letter");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.radio_value(&mut self.board.landscape, false, tr("Portrait"));
+                            ui.radio_value(&mut self.board.landscape, true, tr("Paysage"));
+                        });
+                        ui.checkbox(&mut self.board.notes, tr("Notes des plans"));
+                        ui.checkbox(&mut self.board.timing, tr("Durée et début de chaque plan"));
+                        ui.separator();
+                        if ui
+                            .button(tr("Fichier PDF…"))
+                            .on_hover_text(tr("Des feuilles prêtes à imprimer ou à envoyer, dans la mise en page choisie."))
+                            .clicked()
+                        {
+                            self.export_board_pending = Some(BoardFormat::Pdf);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .button(tr("Page web (HTML)…"))
+                            .on_hover_text(tr(
+                                "Une page avec une vignette, la durée et les notes de chaque plan ; imprimable en PDF depuis le navigateur.",
+                            ))
+                            .clicked()
+                        {
+                            self.export_board_pending = Some(BoardFormat::Html);
+                            ui.close_menu();
+                        }
+                        if ui
+                            .button(tr("Liste de montage (EDL)…"))
+                            .on_hover_text(tr(
+                                "La liste des plans avec leurs durées, à ouvrir dans un logiciel de montage (format CMX 3600).",
+                            ))
+                            .clicked()
+                        {
+                            self.export_board_pending = Some(BoardFormat::Edl);
+                            ui.close_menu();
+                        }
+                    });
                     ui.checkbox(&mut self.play_film, tr("Lire tous les plans à la suite"));
                     ui.label(trf(
                         "{} plans · {} images · {} s",
@@ -6873,9 +6920,23 @@ impl AnimApp {
     }
 
     /// Write the storyboard as a web page (one card per shot) in a chosen folder.
-    fn export_storyboard(&mut self) {
-        let Some(dir) = rfd::FileDialog::new().pick_folder() else { return };
-        let dir = dir.join(format!("{}-storyboard", self.project_name()));
+    fn export_storyboard(&mut self, format: BoardFormat) {
+        let name = self.project_name();
+        // where it goes: a folder for the web page, a file for the others
+        let target = match format {
+            BoardFormat::Html => rfd::FileDialog::new().pick_folder().map(|d| d.join(format!("{name}-storyboard"))),
+            BoardFormat::Pdf => rfd::FileDialog::new()
+                .add_filter("PDF", &["pdf"])
+                .set_file_name(format!("{name}-storyboard.pdf"))
+                .save_file()
+                .map(|p| if p.extension().is_none() { p.with_extension("pdf") } else { p }),
+            BoardFormat::Edl => rfd::FileDialog::new()
+                .add_filter("EDL", &["edl"])
+                .set_file_name(format!("{name}.edl"))
+                .save_file()
+                .map(|p| if p.extension().is_none() { p.with_extension("edl") } else { p }),
+        };
+        let Some(dir) = target else { return };
         let shots: Vec<io::BoardShot> = (0..self.clips.len())
             .map(|i| {
                 let d = self.clip_doc(i);
@@ -6889,11 +6950,17 @@ impl AnimApp {
                 }
             })
             .collect();
-        match io::export_storyboard_html(&self.project_name(), &shots, &dir) {
-            Ok(index) => {
-                self.status = trf("Storyboard exporté : {}", &[&index.display()]);
-                let _ = open_in_browser(&index);
-            }
+        let done = match format {
+            BoardFormat::Html => io::export_storyboard_html(&name, &shots, &self.board, &dir).inspect(|index| {
+                let _ = open_in_browser(index);
+            }),
+            BoardFormat::Pdf => crate::board::export_pdf(&name, &shots, &self.board, &dir).map(|_| dir.clone()),
+            BoardFormat::Edl => std::fs::write(&dir, crate::board::edl(&name, &shots))
+                .map(|_| dir.clone())
+                .map_err(|e| e.to_string()),
+        };
+        match done {
+            Ok(file) => self.status = trf("Storyboard exporté : {}", &[&file.display()]),
             Err(e) => self.status = trf("Échec de l'export : {}", &[&e]),
         }
     }
@@ -7682,8 +7749,8 @@ impl eframe::App for AnimApp {
         self.xsheet_window(ctx);
         self.fx_window(ctx);
         self.storyboard_window(ctx);
-        if std::mem::take(&mut self.export_board_pending) {
-            self.export_storyboard();
+        if let Some(format) = self.export_board_pending.take() {
+            self.export_storyboard(format);
         }
         self.shortcuts_window(ctx);
         self.watch_file(ctx);
@@ -7692,6 +7759,14 @@ impl eframe::App for AnimApp {
 }
 
 /// A sound track's colour in the timeline: 0 = the usual blue, 1-12 = that colour group's colour.
+/// What a storyboard is exported as.
+#[derive(Clone, Copy)]
+enum BoardFormat {
+    Html,
+    Pdf,
+    Edl,
+}
+
 /// What was asked for with a sound track's buttons in the Sound panel.
 enum TrackAsk {
     Replace,

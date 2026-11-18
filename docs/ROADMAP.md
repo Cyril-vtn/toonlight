@@ -7,14 +7,14 @@ first so we can agree on the design.
 Legend: ✅ done · 🟡 partial · ❌ missing. Priority: **P1** core for animators, **P2** important,
 **P3** nice to have.
 
-Today: **63** done, **17** partial, **70** missing.
+Today: **64** done, **16** partial, **70** missing.
 
 ## Next (P1)
 
 1. Drawing: try the macOS pen pressure and tilt with real tablets; pen tilt on Windows and Linux.
-2. Storyboard PDF styles.
-3. Camera handles on the canvas and "follow camera" display.
-4. Selections: ellipse and polygon; feather, grow and shrink.
+2. Camera handles on the canvas and "follow camera" display.
+3. Selections: ellipse and polygon; feather, grow and shrink.
+4. Storyboard: more views (rows, columns, timeline) and scenes (groups of shots).
 
 ---
 
@@ -185,7 +185,7 @@ Each layer has an **effect stack** (several effects in a row, shown live, animat
 | Scenes (groups of clips): add, split, join, duplicate, navigate | ❌ | P2 |
 | Clip operations: split, insert, hide / show, copy, new project from selected clips | ❌ | P2 |
 | Storyboard views (thumbnails, rows, columns, timeline), drawing panels per shot, sound per shot | 🟡 | P2 |
-| Storyboard export: PDF / HTML / EDL with styles, publish | 🟡 | P2 |
+| Storyboard export: PDF, web page and EDL, with layout styles | ✅ | — |
 | Project templates (cartoon, film, TV PAL, web banner…) | ✅ | — |
 | Page sizes, pixel aspect, interlaced fields | 🟡 | P3 |
 | Resize page, modify project, project header (author, notes) | ❌ | P2 |

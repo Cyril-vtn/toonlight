@@ -54,7 +54,9 @@ Installers for every stable version are on the
   hue / saturation, invert, colour key, luma key; a stack of effects per layer, animated with
   keys, that you can save as a preset or a file.
 - **Export**: PNG sequence, animated GIF, MP4 with sound (with [FFmpeg](https://ffmpeg.org) 4.4 or
-  later installed), the whole film (every shot, with its sounds), layer structure for After Effects.
+  later installed), the whole film (every shot, with its sounds), layer structure for After Effects;
+  the storyboard as PDF sheets (grid, one shot per line or per page), a web page or an edit list
+  (EDL).
 - **Workspace**: panels you drag between columns or float, pinned or sliding columns, four rooms
   (workspaces) you can rename, export and import; keyboard shortcuts you can change, per room.
 - **Languages**: English, French, Spanish, German, Simplified Chinese, Japanese.
@@ -96,7 +98,7 @@ Continue, Zed…) can create projects (from templates), add, copy, merge and sta
 draw strokes (with brush connections), shapes, text and gradients, fill, pick colours, edit the
 palette, import pictures, picture sequences, videos and PSD files, set the timing and the exposure
 sheet, the camera (with locks), the sound and the shots, look at a rendered frame and export
-(pictures, GIF, MP4, PSD, After Effects, storyboard page, the whole film).
+(pictures, GIF, MP4, PSD, After Effects, storyboard sheets, the whole film).
 
 In the app, **Help > Connect an AI (MCP)…** shows the configuration to copy. By hand:
 

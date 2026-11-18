@@ -835,41 +835,70 @@ fn html_escape(t: &str) -> String {
         .replace('\n', "<br>")
 }
 
-/// Write a storyboard page: `index.html` and one picture per shot in `dir`. Opens in any browser
-/// and prints to PDF from there.
-pub fn export_storyboard_html(title: &str, shots: &[BoardShot], dir: &Path) -> Result<std::path::PathBuf, String> {
+/// Write a storyboard page: `index.html` and one picture per shot in `dir`, laid out as the
+/// options say. Opens in any browser and prints from there.
+pub fn export_storyboard_html(
+    title: &str,
+    shots: &[BoardShot],
+    o: &crate::board::BoardOptions,
+    dir: &Path,
+) -> Result<std::path::PathBuf, String> {
+    use crate::board::BoardStyle;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
-    let total: usize = shots.iter().map(|s| s.frames).sum();
-    let fps = shots.first().map(|s| s.fps).unwrap_or(24.0).max(1.0);
     let mut cards = String::new();
     for (i, s) in shots.iter().enumerate() {
         let (px, w, h) = &s.picture;
         let img = image::RgbaImage::from_raw(*w as u32, *h as u32, px.clone()).ok_or("bad picture")?;
-        let k = (640.0 / (*w).max(*h) as f32).min(1.0);
+        // one shot per page is printed large: keep more of the picture
+        let side = if o.style == BoardStyle::Single { 1600.0 } else { 640.0 };
+        let k = (side / (*w).max(*h) as f32).min(1.0);
         let (tw, th) = (((*w as f32 * k) as u32).max(1), ((*h as f32 * k) as u32).max(1));
         let small = image::imageops::resize(&img, tw, th, image::imageops::FilterType::Triangle);
         let file = format!("shot-{:03}.png", i + 1);
         small.save(dir.join(&file)).map_err(|e| e.to_string())?;
+        let timing = if o.timing {
+            format!("<span>{}</span>", html_escape(&crate::board::timing_line(shots, i)))
+        } else {
+            String::new()
+        };
+        let notes = if o.notes && !s.notes.is_empty() {
+            format!("<p>{}</p>", html_escape(&s.notes))
+        } else {
+            String::new()
+        };
         cards.push_str(&format!(
-            "<figure class=\"card\"><img src=\"{file}\" alt=\"\"><figcaption><b>{} · {}</b><span>{} · {:.1} s</span><p>{}</p></figcaption></figure>\n",
+            "<figure class=\"card\"><img src=\"{file}\" alt=\"\"><figcaption><b>{} · {}</b>{timing}{notes}</figcaption></figure>\n",
             i + 1,
             html_escape(&s.name),
-            crate::i18n::trf("{} images", &[&s.frames]),
-            s.frames as f32 / s.fps.max(1.0),
-            html_escape(&s.notes)
         ));
     }
+    let layout = match o.style {
+        BoardStyle::Grid => format!(
+            ".grid{{display:grid;grid-template-columns:repeat({},1fr);gap:18px}}\n\
+             .card{{margin:0;border:1px solid #ddd;border-radius:8px;overflow:hidden;break-inside:avoid}}\n\
+             .card img{{width:100%;display:block;background:#fff}}figcaption{{padding:8px 10px}}",
+            o.columns.clamp(2, 6)
+        ),
+        BoardStyle::Rows => ".card{margin:0;display:flex;gap:18px;padding:12px 0;border-bottom:1px solid #ddd;break-inside:avoid}\n\
+             .card img{width:36%;align-self:flex-start;border:1px solid #bbb;background:#fff}figcaption{flex:1}"
+            .to_string(),
+        BoardStyle::Single => ".card{margin:0 0 24px;break-after:page}\n\
+             .card img{width:100%;display:block;border:1px solid #bbb;background:#fff}figcaption{padding:10px 0;font-size:1.15em}"
+            .to_string(),
+    };
+    let paper = format!(
+        "{} {}",
+        if o.letter { "letter" } else { "A4" },
+        if o.landscape { "landscape" } else { "portrait" }
+    );
     let html = format!(
         "<!doctype html>\n<html><head><meta charset=\"utf-8\"><title>{t}</title><style>\n\
          body{{font-family:system-ui,sans-serif;margin:24px;color:#222}}h1{{margin:0 0 4px}}.sub{{color:#666;margin:0 0 20px}}\n\
-         .grid{{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:18px}}\n\
-         .card{{margin:0;border:1px solid #ddd;border-radius:8px;overflow:hidden;break-inside:avoid}}\n\
-         .card img{{width:100%;display:block;background:#fff}}figcaption{{padding:8px 10px}}\n\
-         figcaption span{{float:right;color:#777;font-size:.9em}}figcaption p{{margin:6px 0 0;font-size:.92em;white-space:normal}}\n\
-         @media print{{body{{margin:8mm}}}}</style></head><body>\n<h1>{t}</h1><p class=\"sub\">{sub}</p>\n<div class=\"grid\">\n{cards}</div></body></html>\n",
+         {layout}\n\
+         figcaption b{{display:block}}figcaption span{{display:block;color:#777;font-size:.9em}}figcaption p{{margin:6px 0 0;font-size:.92em;white-space:normal}}\n\
+         @page{{size:{paper};margin:10mm}}@media print{{body{{margin:0}}}}</style></head><body>\n<h1>{t}</h1><p class=\"sub\">{sub}</p>\n<div class=\"grid\">\n{cards}</div></body></html>\n",
         t = html_escape(title),
-        sub = crate::i18n::trf("{} plans · {} images · {} s", &[&shots.len(), &total, &format!("{:.1}", total as f32 / fps)]),
-        cards = cards
+        sub = html_escape(&crate::board::summary_line(shots)),
     );
     let index = dir.join("index.html");
     std::fs::write(&index, html).map_err(|e| e.to_string())?;
