@@ -38,7 +38,7 @@ objc2 = "0.6"
 
 # Windows: the pen's tilt, rotation and eraser end, read from the pointer messages
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Input_Pointer", "Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Input_Pointer", "Win32_UI_WindowsAndMessaging"] }
 
 # Linux and the BSDs: the pen's pressure, tilt and eraser end, read from the X server
 [target.'cfg(all(unix, not(target_os = "macos")))'.dependencies]
